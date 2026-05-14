@@ -44,14 +44,26 @@ app/
 │   ├── bots.py      # CRUD: GET/POST /bots, GET /bots/{id}, GET /bots/{id}/messages
 │   ├── chat.py      # WebSocket /ws/chat
 │   └── templates.py # GET /templates
-└── services/
-    ├── gemini.py    # generate_reply() — wraps Gemini client
-    └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
+├── services/
+│   ├── gemini.py    # generate_reply() — wraps Gemini client using types.GenerateContentConfig
+│   └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
+└── agents/
+    ├── base.py      # Agent ABC + Pipeline — core pipeline logic
+    ├── examples.py  # SanitizerAgent, TruncateAgent — reference implementations
+    └── memory.py    # MemoryStore — Postgres-backed session memory (psycopg2 direct)
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
 
 **Bot templates** live in `app/templates.py` as a static dict. A bot's `system_prompt` can be overridden at creation time via `POST /bots` body.
+
+**Agent pipeline** — composable, stateless agent chain in `app/agents/`:
+- `Agent` ABC: implement `run(self, input: str) -> str` only
+- `Pipeline([AgentA(), AgentB()]).run("input")` — chains agents sequentially
+- Optional Postgres memory: `Pipeline(agents, memory_store=MemoryStore()).run("input", session_id="abc")`
+- `MemoryStore` creates `agent_memory` table automatically; stores per-session, per-agent input/output
+- Memory injected as formatted context string prepended to agent input — agents are never modified directly
+- Adding a new agent: subclass `Agent`, implement `run()`, pass to `Pipeline` — no other changes needed
 
 ## Environment
 
