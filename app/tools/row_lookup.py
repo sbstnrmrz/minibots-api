@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 from google.genai import types
@@ -53,7 +52,3 @@ ROW_LOOKUP_TOOL = types.Tool(
 )
 
 
-def dispatch(name: str, args: dict[str, Any]) -> Any:
-    if name == "lookup_rows":
-        return lookup_rows(**args)
-    raise ValueError(f"Unknown tool: '{name}'")
