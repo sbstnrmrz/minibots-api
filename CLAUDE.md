@@ -53,7 +53,9 @@ app/
 │   ├── intent_analyzer.py  # TextCleanerStep (fn) + IntentAnalyzerAgent — NLP intent → JSON
 │   └── memory.py           # MemoryStore — Postgres-backed session memory (psycopg2 direct)
 └── tools/
-    └── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL + dispatch — CSV/Excel row lookup
+    ├── __init__.py    # ALL_TOOLS list + unified dispatch() covering all tools
+    ├── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL — CSV/Excel row lookup
+    └── calculator.py  # calculate (fn) + CALCULATOR_TOOL — safe AST arithmetic with Decimal precision
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
@@ -70,10 +72,12 @@ app/
 
 **Gemini tools** — function calling integration in `app/tools/` + `app/services/gemini.py`:
 - `lookup_rows(file_path, column, value)` — standalone CSV/Excel row lookup (case-insensitive); raises `ValueError` on bad column
-- `ROW_LOOKUP_TOOL` — `types.Tool` declaration; pass to `generate_with_tools()` so Gemini calls it autonomously
-- `dispatch(name, args)` — executes a tool by name; add new tools here alongside their declaration
+- `calculate(expression)` — safe arithmetic via AST tree-walking + `decimal.Decimal`; supports `+`, `-`, `*`, `/`, parentheses; raises `ValueError` on division by zero or non-arithmetic input
+- `ROW_LOOKUP_TOOL`, `CALCULATOR_TOOL` — `types.Tool` declarations; pass to `generate_with_tools()` so Gemini calls them autonomously
+- `ALL_TOOLS` — list of all tool declarations; use as `tools=ALL_TOOLS` to expose everything at once
+- `dispatch(name, args)` — unified entry point; executes any registered tool by name
 - `generate_with_tools(contents, tools, dispatcher, system_prompt)` — async; runs tool-execution loop until Gemini returns plain text
-- Adding a new tool: implement the Python function in `app/tools/`, add a `FunctionDeclaration` + entry in `dispatch()`, pass the `Tool` to `generate_with_tools()`
+- Adding a new tool: implement the Python function in `app/tools/`, add a `FunctionDeclaration` + entry in `dispatch()` and `ALL_TOOLS`, pass the `Tool` to `generate_with_tools()`
 
 ## Environment
 
