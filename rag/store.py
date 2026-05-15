@@ -1,9 +1,11 @@
 import json
 import re
 from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 import psycopg2
+from google.genai import types
 from markitdown import MarkItDown
 from pgvector.psycopg2 import register_vector
 
@@ -90,6 +92,57 @@ def ingest(
             )
 
     return len(chunks)
+
+
+def has_rag_table(namespace: str) -> bool:
+    _validate_namespace(namespace)
+    table = f"rag_{namespace}"
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+            (table,),
+        )
+        return cur.fetchone()[0]
+
+
+def make_rag_tool(bot_id: int) -> types.Tool:
+    return types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(
+                name="retrieve_documents",
+                description=(
+                    "Search this bot's knowledge base for information relevant to the query. "
+                    "Call this whenever the user asks something that may be answered by uploaded documents."
+                ),
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "query": types.Schema(
+                            type=types.Type.STRING,
+                            description="The search query to look up in the knowledge base.",
+                        ),
+                        "top_k": types.Schema(
+                            type=types.Type.INTEGER,
+                            description="Number of results to return (default 5).",
+                        ),
+                    },
+                    required=["query"],
+                ),
+            )
+        ]
+    )
+
+
+def make_rag_dispatcher(bot_id: int) -> Callable[[str, dict[str, Any]], Any]:
+    namespace = f"bot_{bot_id}"
+
+    def dispatcher(name: str, args: dict[str, Any]) -> Any:
+        if name == "retrieve_documents":
+            results = retrieve(args["query"], namespace, top_k=args.get("top_k", 5))
+            return [{"content": r["content"], "similarity_score": r["similarity_score"]} for r in results]
+        raise ValueError(f"Unknown tool: '{name}'")
+
+    return dispatcher
 
 
 def retrieve(query: str, namespace: str, top_k: int = 5) -> list[dict]:

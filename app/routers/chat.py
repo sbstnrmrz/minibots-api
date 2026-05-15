@@ -1,9 +1,12 @@
+import asyncio
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app import models
 from app.database import db_context
 from app.services.sheets import fetch_sheet
-from app.services.gemini import generate_reply
+from app.services.gemini import generate_reply, generate_with_tools
+from rag.store import has_rag_table, make_rag_tool, make_rag_dispatcher
 
 router = APIRouter(tags=["chat"])
 
@@ -20,6 +23,7 @@ async def chat_ws(websocket: WebSocket):
             system_prompt: str | None = None
             history: list[dict] = []
             user_content = message
+            use_rag = False
 
             if bot_id:
                 with db_context() as db:
@@ -40,11 +44,25 @@ async def chat_ws(websocket: WebSocket):
                             sheet_data = await fetch_sheet(bot.spreadsheet_id)
                             if sheet_data:
                                 user_content = f"{message}\n\nINVENTARIO ACTUAL:\n{sheet_data}"
+
+                        use_rag = await asyncio.to_thread(
+                            has_rag_table, f"bot_{bot_id}"
+                        )
+
                         db.add(models.ChatMessage(bot_id=bot_id, role="user", content=message))
                         db.commit()
 
             contents = history + [{"role": "user", "parts": [{"text": user_content}]}]
-            reply = await generate_reply(contents, system_prompt)
+
+            if use_rag:
+                reply = await generate_with_tools(
+                    contents=contents,
+                    tools=[make_rag_tool(bot_id)],
+                    dispatcher=make_rag_dispatcher(bot_id),
+                    system_prompt=system_prompt,
+                )
+            else:
+                reply = await generate_reply(contents, system_prompt)
 
             if bot_id:
                 with db_context() as db:
