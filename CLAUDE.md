@@ -45,12 +45,15 @@ app/
 │   ├── chat.py      # WebSocket /ws/chat
 │   └── templates.py # GET /templates
 ├── services/
-│   ├── gemini.py    # generate_reply() — wraps Gemini client using types.GenerateContentConfig
+│   ├── gemini.py    # generate_reply(), generate_with_tools() — Gemini client wrappers
 │   └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
-└── agents/
-    ├── base.py      # Agent ABC + Pipeline — core pipeline logic
-    ├── examples.py  # SanitizerAgent, TruncateAgent — reference implementations
-    └── memory.py    # MemoryStore — Postgres-backed session memory (psycopg2 direct)
+├── agents/
+│   ├── base.py             # Agent ABC + Pipeline — core pipeline logic
+│   ├── examples.py         # SanitizerAgent, TruncateAgent — reference implementations
+│   ├── intent_analyzer.py  # TextCleanerStep (fn) + IntentAnalyzerAgent — NLP intent → JSON
+│   └── memory.py           # MemoryStore — Postgres-backed session memory (psycopg2 direct)
+└── tools/
+    └── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL + dispatch — CSV/Excel row lookup
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
@@ -64,6 +67,13 @@ app/
 - `MemoryStore` creates `agent_memory` table automatically; stores per-session, per-agent input/output
 - Memory injected as formatted context string prepended to agent input — agents are never modified directly
 - Adding a new agent: subclass `Agent`, implement `run()`, pass to `Pipeline` — no other changes needed
+
+**Gemini tools** — function calling integration in `app/tools/` + `app/services/gemini.py`:
+- `lookup_rows(file_path, column, value)` — standalone CSV/Excel row lookup (case-insensitive); raises `ValueError` on bad column
+- `ROW_LOOKUP_TOOL` — `types.Tool` declaration; pass to `generate_with_tools()` so Gemini calls it autonomously
+- `dispatch(name, args)` — executes a tool by name; add new tools here alongside their declaration
+- `generate_with_tools(contents, tools, dispatcher, system_prompt)` — async; runs tool-execution loop until Gemini returns plain text
+- Adding a new tool: implement the Python function in `app/tools/`, add a `FunctionDeclaration` + entry in `dispatch()`, pass the `Tool` to `generate_with_tools()`
 
 ## Environment
 
