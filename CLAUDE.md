@@ -43,7 +43,8 @@ app/
 ├── routers/
 │   ├── bots.py      # CRUD: GET/POST /bots, GET /bots/{id}, GET /bots/{id}/messages
 │   ├── chat.py      # WebSocket /ws/chat
-│   └── templates.py # GET /templates
+│   ├── templates.py # GET /templates
+│   └── documents.py # POST /bots/{bot_id}/documents — file upload → RAG ingestion
 ├── services/
 │   ├── gemini.py    # generate_reply(), generate_with_tools() — Gemini client wrappers
 │   └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
@@ -81,9 +82,15 @@ rag/
 - `generate_with_tools(contents, tools, dispatcher, system_prompt)` — async; runs tool-execution loop until Gemini returns plain text
 - Adding a new tool: implement the Python function in `app/tools/`, add a `FunctionDeclaration` + entry in `dispatch()` and `ALL_TOOLS`, pass the `Tool` to `generate_with_tools()`
 
+**Document upload** — `POST /bots/{bot_id}/documents` in `app/routers/documents.py`:
+- Accepts any file via multipart upload; 404 if bot doesn't exist
+- Saves to temp file, calls `init_rag_table` + `ingest`, deletes temp on success or error
+- Namespace is `bot_{bot_id}` → table `rag_bot_{bot_id}` — one RAG per chatbot
+- Returns `{"bot_id": N, "filename": "...", "chunks_ingested": N}`
+
 **RAG store** — namespace-isolated vector storage in `rag/store.py`:
 - `init_rag_table(namespace)` — creates `rag_{namespace}` table with `vector(3072)` column; safe to call on every startup (`CREATE TABLE IF NOT EXISTS`)
-- `ingest(file_path, namespace, chunk_size=500, overlap=50)` — converts any file to Markdown via `markitdown` (supports .pdf, .docx, .pptx, .xlsx, .html, .txt, .md), chunks text with overlap, embeds via `gemini-embedding-001`, stores in `rag_{namespace}`; returns chunk count
+- `ingest(file_path, namespace, chunk_size=500, overlap=50, source_name=None)` — converts any file to Markdown via `markitdown` (supports .pdf, .docx, .pptx, .xlsx, .html, .txt, .md), chunks text with overlap, embeds via `gemini-embedding-001`, stores in `rag_{namespace}`; returns chunk count. Pass `source_name` to override the filename stored in metadata (used by upload endpoint to preserve original filename over temp path)
 - `retrieve(query, namespace, top_k=5)` — embeds query, runs cosine similarity search via pgvector `<=>` operator, returns `list[dict]` with `content`, `metadata`, `similarity_score`
 - Namespace validated as `[a-zA-Z0-9_]+` to prevent SQL injection via table name
 - Same `psycopg2.connect(DATABASE_URL)` pattern as `agents/memory.py` — no new connection setup
