@@ -52,18 +52,26 @@ app/
 │   ├── base.py             # Agent ABC + Pipeline — core pipeline logic
 │   ├── examples.py         # SanitizerAgent, TruncateAgent — reference implementations
 │   ├── intent_analyzer.py  # TextCleanerStep (fn) + IntentAnalyzerAgent — NLP intent → JSON
+│   ├── rag_info_agent.py   # RAGInfoAgent + RAG_INFO_SYSTEM_PROMPT — grounded customer service agent
 │   └── memory.py           # MemoryStore — Postgres-backed session memory (psycopg2 direct)
 └── tools/
     ├── __init__.py    # ALL_TOOLS list + unified dispatch() covering all tools
     ├── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL — CSV/Excel row lookup
     └── calculator.py  # calculate (fn) + CALCULATOR_TOOL — safe AST arithmetic with Decimal precision
 rag/
-└── store.py           # init_rag_table, ingest, retrieve — pgvector RAG storage layer
+└── store.py           # init_rag_table, ingest, retrieve, has_rag_table, make_rag_tool, make_rag_dispatcher
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
 
 **Bot templates** live in `app/templates.py` as a static dict. A bot's `system_prompt` can be overridden at creation time via `POST /bots` body.
+
+**RAGInfoAgent** — grounded customer service agent in `app/agents/rag_info_agent.py`:
+- `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None)`
+- On each `run(input)`: retrieves top-k chunks from `rag_{namespace}`, loads session memory, builds prompt (`<retrieved_context>` + `<conversation_history>` + user input), calls Gemini, saves exchange to memory
+- `RAG_INFO_SYSTEM_PROMPT` — 4-step logic: ground in context → scope check → calculator delegation → response. Override at instantiation for custom business personas
+- Refuses out-of-scope questions; responds honestly when context has no answer — never hallucinate
+- Plugs into `Pipeline` with no changes; manages its own memory when `session_id` is provided
 
 **Agent pipeline** — composable, stateless agent chain in `app/agents/`:
 - `Agent` ABC: implement `run(self, input: str) -> str` only
@@ -90,8 +98,10 @@ rag/
 
 **RAG store** — namespace-isolated vector storage in `rag/store.py`:
 - `init_rag_table(namespace)` — creates `rag_{namespace}` table with `vector(3072)` column; safe to call on every startup (`CREATE TABLE IF NOT EXISTS`)
-- `ingest(file_path, namespace, chunk_size=500, overlap=50, source_name=None)` — converts any file to Markdown via `markitdown` (supports .pdf, .docx, .pptx, .xlsx, .html, .txt, .md), chunks text with overlap, embeds via `gemini-embedding-001`, stores in `rag_{namespace}`; returns chunk count. Pass `source_name` to override the filename stored in metadata (used by upload endpoint to preserve original filename over temp path)
+- `ingest(file_path, namespace, chunk_size=500, overlap=50, source_name=None)` — converts any file to Markdown via `markitdown` (supports .pdf, .docx, .pptx, .xlsx, .html, .txt, .md), chunks text with overlap, embeds via `gemini-embedding-001`, stores in `rag_{namespace}`; returns chunk count. Pass `source_name` to preserve original filename in metadata
 - `retrieve(query, namespace, top_k=5)` — embeds query, runs cosine similarity search via pgvector `<=>` operator, returns `list[dict]` with `content`, `metadata`, `similarity_score`
+- `has_rag_table(namespace)` — returns bool; used by chat handler to decide whether to activate RAG tool
+- `make_rag_tool(bot_id)` + `make_rag_dispatcher(bot_id)` — build a bot-specific `retrieve_documents` Gemini tool and dispatcher (namespace baked in); used by chat WebSocket to let Gemini call retrieval autonomously
 - Namespace validated as `[a-zA-Z0-9_]+` to prevent SQL injection via table name
 - Same `psycopg2.connect(DATABASE_URL)` pattern as `agents/memory.py` — no new connection setup
 - Requires pgvector extension enabled in Postgres (handled by `docker/init.sql` on first DB init)
