@@ -73,11 +73,12 @@ def ingest(
     namespace: str,
     chunk_size: int = 500,
     overlap: int = 50,
+    source_name: str | None = None,
 ) -> int:
     _validate_namespace(namespace)
     text = _read_file(file_path)
     chunks = _chunk_text(text, chunk_size, overlap)
-    source = Path(file_path).name
+    source = source_name or Path(file_path).name
 
     with _connect() as conn, conn.cursor() as cur:
         for i, chunk in enumerate(chunks):
