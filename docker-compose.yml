@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:18
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: minibots 
