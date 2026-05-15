@@ -56,6 +56,8 @@ app/
     ├── __init__.py    # ALL_TOOLS list + unified dispatch() covering all tools
     ├── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL — CSV/Excel row lookup
     └── calculator.py  # calculate (fn) + CALCULATOR_TOOL — safe AST arithmetic with Decimal precision
+rag/
+└── store.py           # init_rag_table, ingest, retrieve — pgvector RAG storage layer
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
@@ -78,6 +80,14 @@ app/
 - `dispatch(name, args)` — unified entry point; executes any registered tool by name
 - `generate_with_tools(contents, tools, dispatcher, system_prompt)` — async; runs tool-execution loop until Gemini returns plain text
 - Adding a new tool: implement the Python function in `app/tools/`, add a `FunctionDeclaration` + entry in `dispatch()` and `ALL_TOOLS`, pass the `Tool` to `generate_with_tools()`
+
+**RAG store** — namespace-isolated vector storage in `rag/store.py`:
+- `init_rag_table(namespace)` — creates `rag_{namespace}` table with `vector(3072)` column; safe to call on every startup (`CREATE TABLE IF NOT EXISTS`)
+- `ingest(file_path, namespace, chunk_size=500, overlap=50)` — converts any file to Markdown via `markitdown` (supports .pdf, .docx, .pptx, .xlsx, .html, .txt, .md), chunks text with overlap, embeds via `gemini-embedding-001`, stores in `rag_{namespace}`; returns chunk count
+- `retrieve(query, namespace, top_k=5)` — embeds query, runs cosine similarity search via pgvector `<=>` operator, returns `list[dict]` with `content`, `metadata`, `similarity_score`
+- Namespace validated as `[a-zA-Z0-9_]+` to prevent SQL injection via table name
+- Same `psycopg2.connect(DATABASE_URL)` pattern as `agents/memory.py` — no new connection setup
+- Requires pgvector extension enabled in Postgres (handled by `docker/init.sql` on first DB init)
 
 ## Environment
 
