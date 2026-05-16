@@ -26,7 +26,10 @@ FastAPI backend for configurable AI chatbots ("minibots") powered by Google Gemi
 1. Client connects via WebSocket at `/ws/chat`, sends JSON `{message, bot_id}`.
 2. Handler loads bot config and full message history from PostgreSQL via `db_context()`.
 3. For `bot_type == "vendedor"`, live inventory is fetched from a public Google Sheets CSV (`services/sheets.py`) and appended to the user message.
-4. Gemini is called in a thread (`asyncio.to_thread`) with full history as multi-turn `contents` (`services/gemini.py`).
+4. Routing by `bot_type`:
+   - `rag_info` + RAG table exists → **IntentAnalyzerAgent → RAGInfoAgent** pipeline (see below)
+   - any other type + RAG table exists → `generate_with_tools()` with `retrieve_documents` Gemini tool
+   - no RAG → `generate_reply()` with full history
 5. Both user and model messages are persisted to `chat_messages` after each turn.
 
 **Package layout:**
@@ -64,14 +67,23 @@ rag/
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
 
-**Bot templates** live in `app/templates.py` as a static dict. A bot's `system_prompt` can be overridden at creation time via `POST /bots` body.
+**Bot templates** live in `app/templates.py` as a static dict. A bot's `system_prompt` can be overridden at creation time via `POST /bots` body. Available types: `rag_info`, `vendedor`, `growth_hacker`, `zen_coach`.
+
+**`rag_info` bot type** — uses the `IntentAnalyzerAgent → RAGInfoAgent` pipeline in the chat WebSocket:
+1. `IntentAnalyzerAgent.run(message)` → JSON `{"contexto": "...", "intencion": "..."}`
+2. `intencion` field used as the RAG retrieval query (normalized, slang-free neutral Spanish)
+3. `RAGInfoAgent.run(message, retrieval_query=intencion)` — original message preserved as user-facing input; `intencion` drives `retrieve()` for better semantic match
+4. Falls back to original message as retrieval query if JSON parse fails
+- Default system prompt is `RAG_INFO_SYSTEM_PROMPT` (imported from `rag_info_agent.py` into `templates.py`)
+- Session memory keyed by `str(bot_id)` — shared across all conversations for that bot
 
 **RAGInfoAgent** — grounded customer service agent in `app/agents/rag_info_agent.py`:
 - `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None)`
-- On each `run(input)`: retrieves top-k chunks from `rag_{namespace}`, loads session memory, builds prompt (`<retrieved_context>` + `<conversation_history>` + user input), calls Gemini, saves exchange to memory
+- `run(input, retrieval_query=None)` — uses `retrieval_query` for `retrieve()` if provided, else falls back to `input`; `input` always used as the `User:` message in the prompt
+- On each call: retrieves top-k chunks from `rag_{namespace}`, loads session memory, builds prompt (`<retrieved_context>` + `<conversation_history>` + user input), calls Gemini, saves exchange to memory
 - `RAG_INFO_SYSTEM_PROMPT` — 4-step logic: ground in context → scope check → calculator delegation → response. Override at instantiation for custom business personas
 - Refuses out-of-scope questions; responds honestly when context has no answer — never hallucinate
-- Plugs into `Pipeline` with no changes; manages its own memory when `session_id` is provided
+- Manages its own memory when `session_id` is provided
 
 **Agent pipeline** — composable, stateless agent chain in `app/agents/`:
 - `Agent` ABC: implement `run(self, input: str) -> str` only
