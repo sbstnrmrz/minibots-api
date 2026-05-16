@@ -1,8 +1,11 @@
 import asyncio
+import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app import models
+from app.agents.intent_analyzer import IntentAnalyzerAgent
+from app.agents.rag_info_agent import RAGInfoAgent
 from app.database import db_context
 from app.services.sheets import fetch_sheet
 from app.services.gemini import generate_reply, generate_with_tools
@@ -20,6 +23,7 @@ async def chat_ws(websocket: WebSocket):
             message: str = data.get("message", "")
             bot_id: int | None = data.get("bot_id")
 
+            bot_type: str | None = None
             system_prompt: str | None = None
             history: list[dict] = []
             user_content = message
@@ -29,6 +33,7 @@ async def chat_ws(websocket: WebSocket):
                 with db_context() as db:
                     bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
                     if bot:
+                        bot_type = bot.bot_type
                         system_prompt = bot.system_prompt
                         past = (
                             db.query(models.ChatMessage)
@@ -40,7 +45,7 @@ async def chat_ws(websocket: WebSocket):
                             {"role": m.role, "parts": [{"text": m.content}]}
                             for m in past
                         ]
-                        if bot.bot_type == "vendedor" and bot.spreadsheet_id:
+                        if bot_type == "vendedor" and bot.spreadsheet_id:
                             sheet_data = await fetch_sheet(bot.spreadsheet_id)
                             if sheet_data:
                                 user_content = f"{message}\n\nINVENTARIO ACTUAL:\n{sheet_data}"
@@ -54,7 +59,20 @@ async def chat_ws(websocket: WebSocket):
 
             contents = history + [{"role": "user", "parts": [{"text": user_content}]}]
 
-            if use_rag:
+            if bot_type == "rag_info" and use_rag:
+                intent_raw = await asyncio.to_thread(IntentAnalyzerAgent().run, message)
+                try:
+                    retrieval_query = json.loads(intent_raw).get("intencion") or message
+                except (json.JSONDecodeError, AttributeError):
+                    retrieval_query = message
+
+                agent = RAGInfoAgent(
+                    namespace=f"bot_{bot_id}",
+                    system_prompt=system_prompt,
+                    session_id=str(bot_id),
+                )
+                reply = await asyncio.to_thread(agent.run, message, retrieval_query)
+            elif use_rag:
                 reply = await generate_with_tools(
                     contents=contents,
                     tools=[make_rag_tool(bot_id)],

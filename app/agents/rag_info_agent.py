@@ -57,8 +57,8 @@ class RAGInfoAgent(Agent):
         self._session_id = session_id
         self._memory = MemoryStore() if session_id else None
 
-    def run(self, input: str) -> str:
-        chunks = retrieve(query=input, namespace=self._namespace, top_k=self._top_k)
+    def run(self, input: str, retrieval_query: str | None = None) -> str:
+        chunks = retrieve(query=retrieval_query or input, namespace=self._namespace, top_k=self._top_k)
 
         if chunks:
             context_block = "<retrieved_context>\n" + "\n\n".join(

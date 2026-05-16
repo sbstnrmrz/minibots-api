@@ -1,4 +1,14 @@
+from app.agents.rag_info_agent import RAG_INFO_SYSTEM_PROMPT
+
 TEMPLATES: dict[str, dict] = {
+    "rag_info": {
+        "id": "rag_info",
+        "name": "Agente de Información RAG",
+        "emoji": "📚",
+        "description": "Agente de atención al cliente fundamentado exclusivamente en documentos cargados.",
+        "system_prompt": RAG_INFO_SYSTEM_PROMPT,
+        "needs_sheet": False,
+    },
     "vendedor": {
         "id": "vendedor",
         "name": "Vendedor de Calzado",
