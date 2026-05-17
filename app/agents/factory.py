@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.agents.base import Agent, Pipeline
 from app.agents.examples import SanitizerAgent, TruncateAgent
+from app.agents.generic_info_agent import GenericInfoAgent
 from app.agents.intent_analyzer import IntentAnalyzerAgent
 from app.agents.rag_info_agent import RAGInfoAgent
 from rag.store import get_namespace
@@ -44,6 +45,12 @@ def _build_agent(
             top_k=config.get("top_k", 5),
             tool_names=tool_names,
         )
+
+    if agent_type == "generic_info":
+        kwargs = {"tool_names": tool_names}
+        if agent_config.system_prompt:
+            kwargs["system_prompt"] = agent_config.system_prompt
+        return GenericInfoAgent(**kwargs)
 
     if agent_type == "sanitizer":
         return SanitizerAgent(tool_names=tool_names)
