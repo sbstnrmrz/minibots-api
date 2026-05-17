@@ -30,12 +30,12 @@ async def send_message(sid, data):
     try:
         payload = Message(**data)
     except ValidationError as e:
-        await sio.emit("error", {"detail": str(e)}, to=sid)
+        await sio.emit("error", {"detail": str(e)})
         return
 
-    await sio.emit("new_message", {"content": payload.content, "role": "user"}, to=sid)
+    await sio.emit("new_message", {"content": payload.content, "role": "user"})
 
     contents = [{"role": "user", "parts": [{"text": payload.content}]}]
     reply = await generate_reply(contents)
 
-    await sio.emit("new_message", {"content": reply, "role": "agent"}, to=sid)
+    await sio.emit("new_message", {"content": reply, "role": "agent"})
