@@ -16,6 +16,9 @@ docker compose up -d
 
 # Install/sync dependencies
 uv sync
+
+# Seed a test workflow and ingest a knowledge base (one-time setup)
+uv run python setup_test.py
 ```
 
 ## Architecture
@@ -23,14 +26,18 @@ uv sync
 FastAPI backend for configurable AI chatbots ("minibots") powered by Google Gemini (`gemini-2.5-flash`).
 
 **Request flow for chat:**
-1. Client connects via WebSocket at `/ws/chat`, sends JSON `{message, bot_id}`.
-2. Handler loads bot config and full message history from PostgreSQL via `db_context()`.
-3. For `bot_type == "vendedor"`, live inventory is fetched from a public Google Sheets CSV (`services/sheets.py`) and appended to the user message.
-4. Routing by `bot_type`:
-   - `rag_info` + RAG table exists → **IntentAnalyzerAgent → RAGInfoAgent** pipeline (see below)
-   - any other type + RAG table exists → `generate_with_tools()` with `retrieve_documents` Gemini tool
+1. Client connects via WebSocket at `/ws/chat`, sends JSON `{message, bot_id, chat_id}`.
+   - `chat_id` is a client-supplied UUID identifying the conversation; optional for backward compat.
+2. Handler loads bot config and message history from PostgreSQL via `db_context()`.
+   - History is scoped to `chat_id` when present; falls back to `bot_id` for legacy messages.
+   - A `Chat` row is upserted on first use of a `chat_id`.
+3. For `bot_type == "vendedor"`, live inventory is fetched from Google Sheets CSV and appended to the message.
+4. Routing (in priority order):
+   - `bot.workflow_id` set → `build_pipeline(workflow_id, db)` → `pipeline.run(AgentContext)`
+   - no workflow_id, `bot_type == "rag_info"` + RAG data exists → legacy hardcoded `IntentAnalyzerAgent → RAGInfoAgent` pipeline
+   - no workflow_id, RAG data exists → `generate_with_tools()` with `retrieve_documents` Gemini tool
    - no RAG → `generate_reply()` with full history
-5. Both user and model messages are persisted to `chat_messages` after each turn.
+5. Both user and model messages are persisted to `chat_messages` (with `chat_id` when present).
 
 **Package layout:**
 ```
@@ -38,92 +45,93 @@ app/
 ├── main.py          # app init, middleware, router includes only
 ├── config.py        # all env vars (GEMINI_API_KEY, DATABASE_URL, ALLOWED_ORIGINS)
 ├── database.py      # SQLAlchemy engine, get_db (FastAPI dep), db_context (context manager for WS)
-├── models.py        # ORM: Bot, ChatMessage — PostgreSQL ARRAY for documents_urls
+├── models.py        # ORM: Bot, ChatMessage, Chat, Workflow, AgentConfig, WorkflowAgent, AgentTool, RagSource
 ├── templates.py     # TEMPLATES dict (id, name, emoji, description, system_prompt, needs_sheet)
 ├── schemas/
 │   ├── bot.py       # BotCreate, BotResponse
 │   └── chat.py      # ChatMessageResponse
 ├── routers/
 │   ├── bots.py      # CRUD: GET/POST /bots, GET /bots/{id}, GET /bots/{id}/messages
-│   ├── chat.py      # WebSocket /ws/chat
+│   ├── chat.py      # WebSocket /ws/chat — workflow routing + legacy fallback
 │   ├── templates.py # GET /templates
-│   └── documents.py # POST /bots/{bot_id}/documents — file upload → RAG ingestion
+│   └── documents.py # POST /bots/{id}/documents, /workflows/{id}/documents, /agent-configs/{id}/documents
 ├── services/
 │   ├── gemini.py    # generate_reply(), generate_with_tools() — Gemini client wrappers
 │   └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
 ├── agents/
-│   ├── base.py             # Agent ABC + Pipeline — core pipeline logic
+│   ├── base.py             # AgentContext dataclass + Agent ABC + Pipeline
+│   ├── factory.py          # build_pipeline(workflow_id, db) — loads workflow from DB, assembles Pipeline
 │   ├── examples.py         # SanitizerAgent, TruncateAgent — reference implementations
-│   ├── intent_analyzer.py  # TextCleanerStep (fn) + IntentAnalyzerAgent — NLP intent → JSON
+│   ├── intent_analyzer.py  # TextCleanerStep (fn) + IntentAnalyzerAgent — sets ctx.retrieval_query
 │   ├── rag_info_agent.py   # RAGInfoAgent + RAG_INFO_SYSTEM_PROMPT — grounded customer service agent
 │   └── memory.py           # MemoryStore — Postgres-backed session memory (psycopg2 direct)
 └── tools/
-    ├── __init__.py    # ALL_TOOLS list + unified dispatch() covering all tools
+    ├── __init__.py    # TOOL_REGISTRY dict + ALL_TOOLS + dispatch() + get_tools_for_agent() + make_dispatcher_for_agent()
     ├── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL — CSV/Excel row lookup
     └── calculator.py  # calculate (fn) + CALCULATOR_TOOL — safe AST arithmetic with Decimal precision
 rag/
-└── store.py           # init_rag_table, ingest, retrieve, has_rag_table, make_rag_tool, make_rag_dispatcher
+└── store.py           # init_rag_table, ingest, retrieve, has_rag_table, get_namespace, make_rag_tool, make_rag_dispatcher
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
 
 **Bot templates** live in `app/templates.py` as a static dict. A bot's `system_prompt` can be overridden at creation time via `POST /bots` body. Available types: `rag_info`, `vendedor`, `growth_hacker`, `zen_coach`.
 
-**`rag_info` bot type** — uses the `IntentAnalyzerAgent → RAGInfoAgent` pipeline in the chat WebSocket:
-1. `IntentAnalyzerAgent.run(message)` → JSON `{"contexto": "...", "intencion": "..."}`
-2. `intencion` field used as the RAG retrieval query (normalized, slang-free neutral Spanish)
-3. `RAGInfoAgent.run(message, retrieval_query=intencion)` — original message preserved as user-facing input; `intencion` drives `retrieve()` for better semantic match
-4. Falls back to original message as retrieval query if JSON parse fails
-- Default system prompt is `RAG_INFO_SYSTEM_PROMPT` (imported from `rag_info_agent.py` into `templates.py`)
-- Session memory keyed by `str(bot_id)` — shared across all conversations for that bot
+**Workflow system** — DB-defined, composable agent pipelines in `app/agents/`:
+- `Workflow` → ordered `WorkflowAgent` rows → `AgentConfig` rows (agent_type, system_prompt, config_json)
+- `AgentTool` rows assign tool names to each agent
+- `build_pipeline(workflow_id, db)` in `factory.py` loads all of the above and returns a ready `Pipeline`
+- Supported `agent_type` values: `intent_analyzer`, `rag_info`, `sanitizer`, `truncate`
+- Adding a new agent type: subclass `Agent`, implement `run(ctx: AgentContext) -> AgentContext`, add an entry in `factory.py:_build_agent()`
 
-**RAGInfoAgent** — grounded customer service agent in `app/agents/rag_info_agent.py`:
-- `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None)`
-- `run(input, retrieval_query=None)` — uses `retrieval_query` for `retrieve()` if provided, else falls back to `input`; `input` always used as the `User:` message in the prompt
-- On each call: retrieves top-k chunks from `rag_{namespace}`, loads session memory, builds prompt (`<retrieved_context>` + `<conversation_history>` + user input), calls Gemini, saves exchange to memory
-- `RAG_INFO_SYSTEM_PROMPT` — 4-step logic: ground in context → scope check → calculator delegation → response. Override at instantiation for custom business personas
+**AgentContext** — uniform data carrier through the pipeline (`app/agents/base.py`):
+- `AgentContext(input: str, chat_id: str | None, retrieval_query: str | None)`
+- `Agent.run(ctx) -> AgentContext` — all agents read/write context fields; never modify input in place
+- `Pipeline.run(ctx) -> str` — threads context through agents sequentially, returns `ctx.input` of last agent
+- Memory (if `memory_store` attached) keyed by `ctx.chat_id`; per-agent history injected before each step
+
+**`IntentAnalyzerAgent`** — NLP intent normalizer (`app/agents/intent_analyzer.py`):
+- Input: `ctx.input` (user message, optionally pre-cleaned by `SanitizerAgent`)
+- Output: same `ctx` with `retrieval_query` set to the normalized Spanish `"intencion"` field
+- `ctx.input` is preserved — downstream agents always see the original user message
+
+**`RAGInfoAgent`** — grounded customer service agent (`app/agents/rag_info_agent.py`):
+- `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None, tool_names=[])`
+- `run(ctx)` — uses `ctx.retrieval_query or ctx.input` for RAG retrieval; `ctx.input` as user-facing message
+- On each call: retrieves top-k chunks, loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls Gemini, saves exchange to memory
+- `RAG_INFO_SYSTEM_PROMPT` — 4-step logic: ground in context → scope check → calculator delegation → response
 - Refuses out-of-scope questions; responds honestly when context has no answer — never hallucinate
-- Manages its own memory when `session_id` is provided
 
-**Agent pipeline** — composable, stateless agent chain in `app/agents/`:
-- `Agent` ABC: implement `run(self, input: str) -> str` only
-- `Pipeline([AgentA(), AgentB()]).run("input")` — chains agents sequentially
-- Optional Postgres memory: `Pipeline(agents, memory_store=MemoryStore()).run("input", session_id="abc")`
-- `MemoryStore` creates `agent_memory` table automatically; stores per-session, per-agent input/output
-- Memory injected as formatted context string prepended to agent input — agents are never modified directly
-- Adding a new agent: subclass `Agent`, implement `run()`, pass to `Pipeline` — no other changes needed
+**Tool registry** — `app/tools/__init__.py`:
+- `TOOL_REGISTRY: dict[str, ToolEntry]` — maps tool name → `(declaration: types.Tool, fn: Callable)`
+- `get_tools_for_agent(tool_names)` → list of Gemini `Tool` declarations for an agent's subset
+- `make_dispatcher_for_agent(tool_names)` → scoped dispatcher that only allows the agent's tools
+- `ALL_TOOLS` and `dispatch()` preserved for backward compat
+- Adding a new tool: implement in `app/tools/`, add to `TOOL_REGISTRY`, add to `AgentTool` rows in DB
 
-**Gemini tools** — function calling integration in `app/tools/` + `app/services/gemini.py`:
-- `lookup_rows(file_path, column, value)` — standalone CSV/Excel row lookup (case-insensitive); raises `ValueError` on bad column
-- `calculate(expression)` — safe arithmetic via AST tree-walking + `decimal.Decimal`; supports `+`, `-`, `*`, `/`, parentheses; raises `ValueError` on division by zero or non-arithmetic input
-- `ROW_LOOKUP_TOOL`, `CALCULATOR_TOOL` — `types.Tool` declarations; pass to `generate_with_tools()` so Gemini calls them autonomously
-- `ALL_TOOLS` — list of all tool declarations; use as `tools=ALL_TOOLS` to expose everything at once
-- `dispatch(name, args)` — unified entry point; executes any registered tool by name
-- `generate_with_tools(contents, tools, dispatcher, system_prompt)` — async; runs tool-execution loop until Gemini returns plain text
-- Adding a new tool: implement the Python function in `app/tools/`, add a `FunctionDeclaration` + entry in `dispatch()` and `ALL_TOOLS`, pass the `Tool` to `generate_with_tools()`
+**RAG scoping** — `rag/store.py` + `rag_sources` table:
+- All chunks stored in single `rag_chunks(namespace, content, embedding, metadata)` table
+- `rag_sources(namespace, scope_type, scope_id)` registry maps a namespace to its owner
+- Scope types: `"bot"` → namespace `bot_{id}`, `"workflow"` → `workflow_{id}`, `"agent"` → `agent_{id}`
+- `get_namespace(scope_type, scope_id)` — looks up the registered namespace for a scope
+- `init_rag_table(namespace)` — ensures `rag_chunks` table + index exist (idempotent, namespace validated)
+- `ingest(file_path, namespace, ...)` — chunks + embeds file, inserts rows into `rag_chunks`
+- `retrieve(query, namespace, top_k=5)` — cosine similarity search filtered by namespace
+- `make_rag_tool(namespace)` + `make_rag_dispatcher(namespace)` — build a `retrieve_documents` Gemini tool and dispatcher scoped to a namespace
+- Namespace validated as `[a-zA-Z0-9_]+` to prevent SQL injection
+- Upload endpoints: `POST /bots/{id}/documents`, `/workflows/{id}/documents`, `/agent-configs/{id}/documents`
 
-**Document upload** — `POST /bots/{bot_id}/documents` in `app/routers/documents.py`:
-- Accepts any file via multipart upload; 404 if bot doesn't exist
-- Saves to temp file, calls `init_rag_table` + `ingest`, deletes temp on success or error
-- Namespace is `bot_{bot_id}` → table `rag_bot_{bot_id}` — one RAG per chatbot
-- Returns `{"bot_id": N, "filename": "...", "chunks_ingested": N}`
-
-**RAG store** — namespace-isolated vector storage in `rag/store.py`:
-- `init_rag_table(namespace)` — creates `rag_{namespace}` table with `vector(3072)` column; safe to call on every startup (`CREATE TABLE IF NOT EXISTS`)
-- `ingest(file_path, namespace, chunk_size=500, overlap=50, source_name=None)` — converts any file to Markdown via `markitdown` (supports .pdf, .docx, .pptx, .xlsx, .html, .txt, .md), chunks text with overlap, embeds via `gemini-embedding-001`, stores in `rag_{namespace}`; returns chunk count. Pass `source_name` to preserve original filename in metadata
-- `retrieve(query, namespace, top_k=5)` — embeds query, runs cosine similarity search via pgvector `<=>` operator, returns `list[dict]` with `content`, `metadata`, `similarity_score`
-- `has_rag_table(namespace)` — returns bool; used by chat handler to decide whether to activate RAG tool
-- `make_rag_tool(bot_id)` + `make_rag_dispatcher(bot_id)` — build a bot-specific `retrieve_documents` Gemini tool and dispatcher (namespace baked in); used by chat WebSocket to let Gemini call retrieval autonomously
-- Namespace validated as `[a-zA-Z0-9_]+` to prevent SQL injection via table name
-- Same `psycopg2.connect(DATABASE_URL)` pattern as `agents/memory.py` — no new connection setup
-- Requires pgvector extension enabled in Postgres (handled by `docker/init.sql` on first DB init)
+**Namespace resolution for `rag_info` agents** (in `factory.py`):
+1. Explicit `namespace` key in `agent_config.config_json`
+2. `rag_sources` entry with `scope_type="agent"`, `scope_id=agent_config.id`
+3. `rag_sources` entry with `scope_type="workflow"`, `scope_id=workflow_id`
+4. Raises `ValueError` if none found
 
 ## Environment
 
 Copy `.env.example` to `.env` and fill in:
 - `GEMINI_API_KEY` — Google Gemini API key
 - `DATABASE_URL` — PostgreSQL connection string (default for local Docker: `postgresql://user:1234@localhost:5432/minibots`)
+- `ENVIRONMENT` — set to `development` to allow all CORS origins (`ALLOWED_ORIGINS=["*"]`)
 
-All env vars are read once in `app/config.py`. Database schema is auto-created on startup. Additional schema changes go in `migrate.py` and are run manually (no Alembic).
-
-CORS is restricted to `http://localhost:5173`; change `ALLOWED_ORIGINS` in `app/config.py`.
+All env vars are read once in `app/config.py`. Database schema is auto-created on startup via SQLAlchemy `create_all`. Additional schema changes go in `migrate.py` and are run manually (no Alembic).
