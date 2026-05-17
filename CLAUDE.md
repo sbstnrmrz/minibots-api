@@ -59,12 +59,13 @@ app/
 │   ├── gemini.py    # generate_reply(), generate_with_tools() — Gemini client wrappers
 │   └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
 ├── agents/
-│   ├── base.py             # AgentContext dataclass + Agent ABC + Pipeline
-│   ├── factory.py          # build_pipeline(workflow_id, db) — loads workflow from DB, assembles Pipeline
-│   ├── examples.py         # SanitizerAgent, TruncateAgent — reference implementations
-│   ├── intent_analyzer.py  # TextCleanerStep (fn) + IntentAnalyzerAgent — sets ctx.retrieval_query
-│   ├── rag_info_agent.py   # RAGInfoAgent + RAG_INFO_SYSTEM_PROMPT — grounded customer service agent
-│   └── memory.py           # MemoryStore — Postgres-backed session memory (psycopg2 direct)
+│   ├── base.py              # AgentContext dataclass + Agent ABC + Pipeline
+│   ├── factory.py           # build_pipeline(workflow_id, db) — loads workflow from DB, assembles Pipeline
+│   ├── examples.py          # SanitizerAgent, TruncateAgent — reference implementations
+│   ├── intent_analyzer.py   # TextCleanerStep (fn) + IntentAnalyzerAgent — sets ctx.retrieval_query
+│   ├── rag_info_agent.py    # RAGInfoAgent + RAG_INFO_SYSTEM_PROMPT — grounded customer service agent
+│   ├── generic_info_agent.py# GenericInfoAgent + GENERIC_INFO_SYSTEM_PROMPT — general-purpose Gemini agent with memory, no RAG
+│   └── memory.py            # MemoryStore — Postgres-backed session memory (psycopg2 direct)
 └── tools/
     ├── __init__.py    # TOOL_REGISTRY dict + ALL_TOOLS + dispatch() + get_tools_for_agent() + make_dispatcher_for_agent()
     ├── row_lookup.py  # lookup_rows (fn) + ROW_LOOKUP_TOOL — CSV/Excel row lookup
@@ -81,7 +82,7 @@ rag/
 - `Workflow` → ordered `WorkflowAgent` rows → `AgentConfig` rows (agent_type, system_prompt, config_json)
 - `AgentTool` rows assign tool names to each agent
 - `build_pipeline(workflow_id, db)` in `factory.py` loads all of the above and returns a ready `Pipeline`
-- Supported `agent_type` values: `intent_analyzer`, `rag_info`, `sanitizer`, `truncate`
+- Supported `agent_type` values: `intent_analyzer`, `rag_info`, `generic_info`, `sanitizer`, `truncate`
 - Adding a new agent type: subclass `Agent`, implement `run(ctx: AgentContext) -> AgentContext`, add an entry in `factory.py:_build_agent()`
 
 **AgentContext** — uniform data carrier through the pipeline (`app/agents/base.py`):
@@ -94,6 +95,13 @@ rag/
 - Input: `ctx.input` (user message, optionally pre-cleaned by `SanitizerAgent`)
 - Output: same `ctx` with `retrieval_query` set to the normalized Spanish `"intencion"` field
 - `ctx.input` is preserved — downstream agents always see the original user message
+
+**`GenericInfoAgent`** — general-purpose conversational agent (`app/agents/generic_info_agent.py`):
+- `GenericInfoAgent(system_prompt=GENERIC_INFO_SYSTEM_PROMPT, session_id=None, tool_names=[])`
+- `run(ctx)` — uses `ctx.input` as the user message; no RAG retrieval
+- On each call: loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls Gemini, saves exchange to memory
+- `GENERIC_INFO_SYSTEM_PROMPT` — same 3-step structure as RAGInfoAgent but answers from full Gemini knowledge; no grounding restriction
+- Use when no domain-specific knowledge base is needed
 
 **`RAGInfoAgent`** — grounded customer service agent (`app/agents/rag_info_agent.py`):
 - `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None, tool_names=[])`
