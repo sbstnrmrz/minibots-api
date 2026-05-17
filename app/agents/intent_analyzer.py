@@ -1,8 +1,10 @@
+import dataclasses
+import json
 import re
 
 from google.genai import types
 
-from app.agents.base import Agent
+from app.agents.base import Agent, AgentContext
 from app.services.gemini import _client
 
 INTENT_ANALYZER_SYSTEM_PROMPT = """Role: You are an Expert NLP Intent Analyzer and Neutral Spanish Translator for a conversational AI backend.
@@ -84,8 +86,8 @@ def TextCleanerStep(text: str) -> str:
 
 
 class IntentAnalyzerAgent(Agent):
-    def run(self, input: str) -> str:
-        cleaned = TextCleanerStep(input)
+    def run(self, ctx: AgentContext) -> AgentContext:
+        cleaned = TextCleanerStep(ctx.input)
         config = types.GenerateContentConfig(
             system_instruction=INTENT_ANALYZER_SYSTEM_PROMPT,
         )
@@ -94,4 +96,10 @@ class IntentAnalyzerAgent(Agent):
             contents=[{"role": "user", "parts": [{"text": cleaned}]}],
             config=config,
         )
-        return res.text
+        try:
+            parsed = json.loads(res.text)
+            retrieval_query = parsed.get("intencion") or ctx.input
+        except (json.JSONDecodeError, AttributeError):
+            retrieval_query = ctx.input
+
+        return dataclasses.replace(ctx, retrieval_query=retrieval_query)

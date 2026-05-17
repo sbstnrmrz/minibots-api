@@ -18,6 +18,18 @@ _EMBED_MODEL = "gemini-embedding-001"
 _EMBED_DIM = 3072
 _VALID_NAMESPACE = re.compile(r"^[a-zA-Z0-9_]+$")
 
+_INIT_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id         SERIAL PRIMARY KEY,
+    namespace  TEXT         NOT NULL,
+    content    TEXT         NOT NULL,
+    embedding  vector({_EMBED_DIM}) NOT NULL,
+    metadata   JSONB,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_namespace ON rag_chunks (namespace);
+"""
+
 
 def _validate_namespace(namespace: str) -> None:
     if not _VALID_NAMESPACE.match(namespace):
@@ -56,18 +68,11 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 
 def init_rag_table(namespace: str) -> None:
+    """Ensure the shared rag_chunks table and its namespace index exist."""
     _validate_namespace(namespace)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        cur.execute(f"""
-            CREATE TABLE IF NOT EXISTS rag_{namespace} (
-                id         SERIAL PRIMARY KEY,
-                content    TEXT        NOT NULL,
-                embedding  vector({_EMBED_DIM}) NOT NULL,
-                metadata   JSONB,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-        """)
+        cur.execute(_INIT_TABLE_SQL)
 
 
 def ingest(
@@ -83,58 +88,75 @@ def ingest(
     source = source_name or Path(file_path).name
 
     with _connect() as conn, conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        cur.execute(_INIT_TABLE_SQL)
         for i, chunk in enumerate(chunks):
             embedding = np.array(_embed(chunk))
             meta = json.dumps({"source": source, "chunk_index": i})
             cur.execute(
-                f"INSERT INTO rag_{namespace} (content, embedding, metadata) VALUES (%s, %s, %s)",
-                (chunk, embedding, meta),
+                "INSERT INTO rag_chunks (namespace, content, embedding, metadata) VALUES (%s, %s, %s, %s)",
+                (namespace, chunk, embedding, meta),
             )
 
     return len(chunks)
 
 
 def has_rag_table(namespace: str) -> bool:
+    """Return True if any chunks exist for this namespace."""
     _validate_namespace(namespace)
-    table = f"rag_{namespace}"
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
-            (table,),
+            "SELECT EXISTS (SELECT 1 FROM rag_chunks WHERE namespace = %s LIMIT 1)",
+            (namespace,),
         )
         return cur.fetchone()[0]
 
 
-def make_rag_tool(bot_id: int) -> types.Tool:
-    return types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(
-                name="retrieve_documents",
-                description=(
-                    "Search this bot's knowledge base for information relevant to the query. "
-                    "Call this whenever the user asks something that may be answered by uploaded documents."
-                ),
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        "query": types.Schema(
-                            type=types.Type.STRING,
-                            description="The search query to look up in the knowledge base.",
-                        ),
-                        "top_k": types.Schema(
-                            type=types.Type.INTEGER,
-                            description="Number of results to return (default 5).",
-                        ),
-                    },
-                    required=["query"],
-                ),
-            )
-        ]
-    )
+def get_namespace(scope_type: str, scope_id: int) -> str | None:
+    """Return the registered RAG namespace for a given scope, or None if not found."""
+    with psycopg2.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT namespace FROM rag_sources WHERE scope_type = %s AND scope_id = %s LIMIT 1",
+            (scope_type, scope_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
-def make_rag_dispatcher(bot_id: int) -> Callable[[str, dict[str, Any]], Any]:
-    namespace = f"bot_{bot_id}"
+_RAG_TOOL_DECLARATION = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="retrieve_documents",
+            description=(
+                "Search the knowledge base for information relevant to the query. "
+                "Call this whenever the user asks something that may be answered by uploaded documents."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="The search query to look up in the knowledge base.",
+                    ),
+                    "top_k": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Number of results to return (default 5).",
+                    ),
+                },
+                required=["query"],
+            ),
+        )
+    ]
+)
+
+
+def make_rag_tool(namespace: str) -> types.Tool:
+    _validate_namespace(namespace)
+    return _RAG_TOOL_DECLARATION
+
+
+def make_rag_dispatcher(namespace: str) -> Callable[[str, dict[str, Any]], Any]:
+    _validate_namespace(namespace)
 
     def dispatcher(name: str, args: dict[str, Any]) -> Any:
         if name == "retrieve_documents":
@@ -147,25 +169,25 @@ def make_rag_dispatcher(bot_id: int) -> Callable[[str, dict[str, Any]], Any]:
 
 def retrieve(query: str, namespace: str, top_k: int = 5) -> list[dict]:
     _validate_namespace(namespace)
-    table = f"rag_{namespace}"
 
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
-            (table,),
+            "SELECT EXISTS (SELECT 1 FROM rag_chunks WHERE namespace = %s LIMIT 1)",
+            (namespace,),
         )
         if not cur.fetchone()[0]:
-            raise ValueError(f"Namespace '{namespace}' does not exist. Call init_rag_table first.")
+            raise ValueError(f"Namespace '{namespace}' has no ingested data.")
 
         query_embedding = np.array(_embed(query))
         cur.execute(
-            f"""
+            """
             SELECT content, metadata, 1 - (embedding <=> %s) AS similarity_score
-            FROM {table}
+            FROM rag_chunks
+            WHERE namespace = %s
             ORDER BY embedding <=> %s
             LIMIT %s
             """,
-            (query_embedding, query_embedding, top_k),
+            (query_embedding, namespace, query_embedding, top_k),
         )
         return [
             {"content": row[0], "metadata": row[1], "similarity_score": float(row[2])}

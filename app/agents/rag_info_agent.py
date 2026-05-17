@@ -1,6 +1,8 @@
+import dataclasses
+
 from google.genai import types
 
-from app.agents.base import Agent
+from app.agents.base import Agent, AgentContext
 from app.agents.memory import MemoryStore
 from app.services.gemini import _client
 from rag.store import retrieve
@@ -50,15 +52,20 @@ class RAGInfoAgent(Agent):
         system_prompt: str = RAG_INFO_SYSTEM_PROMPT,
         top_k: int = 5,
         session_id: str | None = None,
+        tool_names: list[str] | None = None,
     ) -> None:
+        super().__init__(tool_names)
         self._namespace = namespace
         self._system_prompt = system_prompt
         self._top_k = top_k
         self._session_id = session_id
-        self._memory = MemoryStore() if session_id else None
+        self._memory = MemoryStore()
 
-    def run(self, input: str, retrieval_query: str | None = None) -> str:
-        chunks = retrieve(query=retrieval_query or input, namespace=self._namespace, top_k=self._top_k)
+    def run(self, ctx: AgentContext) -> AgentContext:
+        session_id = ctx.chat_id or self._session_id
+        query = ctx.retrieval_query or ctx.input
+
+        chunks = retrieve(query=query, namespace=self._namespace, top_k=self._top_k)
 
         if chunks:
             context_block = "<retrieved_context>\n" + "\n\n".join(
@@ -68,13 +75,13 @@ class RAGInfoAgent(Agent):
             context_block = "<retrieved_context>\nNo relevant information found in the knowledge base.\n</retrieved_context>"
 
         history_block = ""
-        if self._memory and self._session_id:
-            history = self._memory.load(self._session_id, self.name)
+        if session_id:
+            history = self._memory.load(session_id, self.name)
             if history:
                 turns = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in history)
                 history_block = f"<conversation_history>\n{turns}\n</conversation_history>\n\n"
 
-        user_message = f"{context_block}\n\n{history_block}User: {input}"
+        user_message = f"{context_block}\n\n{history_block}User: {ctx.input}"
 
         config = types.GenerateContentConfig(system_instruction=self._system_prompt)
         res = _client.models.generate_content(
@@ -84,8 +91,8 @@ class RAGInfoAgent(Agent):
         )
         reply = res.text
 
-        if self._memory and self._session_id:
-            self._memory.save(self._session_id, self.name, "user", input)
-            self._memory.save(self._session_id, self.name, "assistant", reply)
+        if session_id:
+            self._memory.save(session_id, self.name, "user", ctx.input)
+            self._memory.save(session_id, self.name, "assistant", reply)
 
-        return reply
+        return dataclasses.replace(ctx, input=reply, retrieval_query=None)
