@@ -1,45 +1,41 @@
 import asyncio
+import sys
+import uuid
 import json
 import websockets
 
-SERVER_URL = "ws://localhost:8000/socket.io/?EIO=4&transport=websocket"
+SERVER_URL = "ws://localhost:8000/ws/chat"
 
 
-async def main():
+async def main(bot_id: int | None):
+    chat_id = str(uuid.uuid4())
+
     async with websockets.connect(SERVER_URL) as ws:
-        # Engine.IO handshake
-        await ws.recv()  # open packet "0{...}"
-        await ws.send("40")  # Socket.IO connect
-        await ws.recv()  # connect ack "40{...}"
+        print(f"Conectado. bot_id={bot_id}  chat_id={chat_id}")
+        print("Escribe tu mensaje (Ctrl+C para salir).\n")
 
-        print("Conectado. Escribe tu mensaje (Ctrl+C para salir).\n")
         loop = asyncio.get_event_loop()
 
-        async def listen():
-            async for raw in ws:
-                if raw == "2":  # ping
-                    await ws.send("3")  # pong
-                elif raw.startswith("42"):
-                    event, data = json.loads(raw[2:])
-                    role = data.get("role", "")
-                    content = data.get("content", "")
-                    if event == "new_message" and role == "agent":
-                        print(f"\nBot: {content}\n> ", end="", flush=True)
-                    elif event == "error":
-                        print(f"\nError: {data.get('detail')}\n> ", end="", flush=True)
-
-        asyncio.create_task(listen())
-
         while True:
-            text = await loop.run_in_executor(None, input, "> ")
+            text = await loop.run_in_executor(None, lambda: input("> "))
             if not text.strip():
                 continue
-            payload = "42" + json.dumps(["send_message", {"content": text, "role": "user"}])
-            await ws.send(payload)
+
+            payload = {"message": text}
+            if bot_id:
+                payload["bot_id"] = bot_id
+                payload["chat_id"] = chat_id
+
+            await ws.send(json.dumps(payload))
+
+            raw = await ws.recv()
+            data = json.loads(raw)
+            print(f"\nBot: {data.get('response', data)}\n")
 
 
 if __name__ == "__main__":
+    bot_id = int(sys.argv[1]) if len(sys.argv) > 1 else None
     try:
-        asyncio.run(main())
+        asyncio.run(main(bot_id))
     except (KeyboardInterrupt, EOFError):
         print("\nHasta luego.")
