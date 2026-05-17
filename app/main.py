@@ -1,18 +1,21 @@
+from app.socket import sio, socket_app
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models
 from app.database import engine
-from app.config import CORS_ORIGINS
+from app.config import ALLOWED_ORIGINS
 from app.routers import bots, chat, templates, products, documents
 
 models.Base.metadata.create_all(bind=engine)
 
+
 app = FastAPI()
+app.mount("/socket.io", socket_app)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,7 +27,7 @@ app.include_router(templates.router)
 app.include_router(products.router)
 app.include_router(documents.router)
 
-
 @app.get("/")
 def root():
     return {"message": "Hello from minibots-api!"}
+

@@ -36,7 +36,7 @@ FastAPI backend for configurable AI chatbots ("minibots") powered by Google Gemi
 ```
 app/
 ├── main.py          # app init, middleware, router includes only
-├── config.py        # all env vars (GEMINI_API_KEY, DATABASE_URL, CORS_ORIGINS)
+├── config.py        # all env vars (GEMINI_API_KEY, DATABASE_URL, ALLOWED_ORIGINS)
 ├── database.py      # SQLAlchemy engine, get_db (FastAPI dep), db_context (context manager for WS)
 ├── models.py        # ORM: Bot, ChatMessage — PostgreSQL ARRAY for documents_urls
 ├── templates.py     # TEMPLATES dict (id, name, emoji, description, system_prompt, needs_sheet)
@@ -126,4 +126,4 @@ Copy `.env.example` to `.env` and fill in:
 
 All env vars are read once in `app/config.py`. Database schema is auto-created on startup. Additional schema changes go in `migrate.py` and are run manually (no Alembic).
 
-CORS is restricted to `http://localhost:5173`; change `CORS_ORIGINS` in `app/config.py`.
+CORS is restricted to `http://localhost:5173`; change `ALLOWED_ORIGINS` in `app/config.py`.

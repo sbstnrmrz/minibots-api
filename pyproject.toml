@@ -14,5 +14,9 @@ dependencies = [
     "psycopg2-binary>=2.9.12",
     "pypdf>=6.11.0",
     "python-dotenv>=1.2.2",
+    "python-socketio>=5.16.1",
     "sqlalchemy>=2.0.49",
 ]
+
+[dependency-groups]
+dev = []
