@@ -2,6 +2,8 @@ import socketio
 import logging
 from pydantic import BaseModel, ValidationError
 
+from app.services.gemini import generate_reply
+
 logger = logging.getLogger("uvicorn")
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=[])
@@ -31,5 +33,9 @@ async def send_message(sid, data):
         await sio.emit("error", {"detail": str(e)}, to=sid)
         return
 
-    logger.info(f"Message received: {payload.content}")
-    await sio.emit("new_message", {"content": payload.content, "role": payload.role}, to=sid)
+    await sio.emit("new_message", {"content": payload.content, "role": "user"}, to=sid)
+
+    contents = [{"role": "user", "parts": [{"text": payload.content}]}]
+    reply = await generate_reply(contents)
+
+    await sio.emit("new_message", {"content": reply, "role": "agent"}, to=sid)

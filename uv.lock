@@ -639,6 +639,11 @@ dependencies = [
     { name = "sqlalchemy" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "websockets" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.136.1" },
@@ -655,7 +660,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = []
+dev = [{ name = "websockets", specifier = ">=16.0" }]
 
 [[package]]
 name = "numpy"

@@ -19,4 +19,6 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = []
+dev = [
+    "websockets>=16.0",
+]
