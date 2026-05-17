@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import models
 from app.database import engine
 from app.config import ALLOWED_ORIGINS
-from app.routers import bots, chat, templates, products
+from app.routers import bots, chat, templates, products, documents
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -25,6 +25,7 @@ app.include_router(bots.router)
 app.include_router(chat.router)
 app.include_router(templates.router)
 app.include_router(products.router)
+app.include_router(documents.router)
 
 @app.get("/")
 def root():
