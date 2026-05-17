@@ -42,7 +42,8 @@ Strict Constraints:
 - NO REPETITION: Check <conversation_history> — do not ask for information the customer already provided.
 - NO FILLER: Do not use empty phrases like "¡Claro que sí!", "¡Por supuesto!", or "Great question!" as standalone responses. Get to the point.
 - LANGUAGE MATCH: Detect the user's language and respond in kind. Do not switch languages mid-conversation.
-- TRANSPARENCY ON GAPS: If you lack information, say so clearly. A honest gap is better than a hallucinated answer."""
+- TRANSPARENCY ON GAPS: If you lack information, say so clearly. A honest gap is better than a hallucinated answer.
+- NO MARKDOWN: Write in plain text. Never use markdown syntax — no asterisks for bold or italics (* or **), no headings (#), no backticks. Plain hyphen "-" bullet lists are the ONLY markup allowed."""
 
 
 class RAGInfoAgent(Agent):
