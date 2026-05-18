@@ -1,79 +1,56 @@
+"""Chat-completion wrappers.
+
+Thin async adapters over `llm.call_llm`. Kept for backward compatibility:
+`chat.py` and `socket.py` still call `generate_reply` / `generate_with_tools`
+with Gemini-format `contents`. These functions convert that format to
+OpenAI-format `messages` and delegate to the unified LLM client.
+"""
+
 import asyncio
+import dataclasses
 from typing import Any, Callable
 
-from google import genai
-from google.genai import types
+from llm import DEFAULT_LLM_CONFIG, call_llm
 
-from app.config import GEMINI_API_KEY
+_ROLE_MAP = {"user": "user", "model": "assistant", "assistant": "assistant"}
 
-_client = genai.Client(api_key=GEMINI_API_KEY)
 
-_MODEL = "gemini-2.5-flash"
+def _to_openai_messages(contents: list[dict]) -> list[dict]:
+    """Convert Gemini-format `contents` to OpenAI-format `messages`.
+
+    Gemini: {"role": "user"|"model", "parts": [{"text": ...}, ...]}
+    OpenAI: {"role": "user"|"assistant", "content": "..."}
+    """
+    messages = []
+    for c in contents:
+        role = _ROLE_MAP.get(c.get("role", "user"), "user")
+        parts = c.get("parts", [])
+        text = "".join(p.get("text", "") for p in parts)
+        messages.append({"role": role, "content": text})
+    return messages
 
 
 async def generate_reply(
     contents: list[dict],
     system_prompt: str | None = None,
 ) -> str:
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-    ) if system_prompt else None
-    res = await asyncio.to_thread(
-        lambda: _client.models.generate_content(
-            model=_MODEL,
-            contents=contents,
-            config=config,
-        )
+    config = dataclasses.replace(
+        DEFAULT_LLM_CONFIG,
+        system_prompt=system_prompt or "",
     )
-    return res.text
+    messages = _to_openai_messages(contents)
+    return await asyncio.to_thread(call_llm, config, messages)
 
 
 async def generate_with_tools(
     contents: list,
-    tools: list[types.Tool],
+    tools: list[dict],
     dispatcher: Callable[[str, dict[str, Any]], Any],
     system_prompt: str | None = None,
 ) -> str:
-    config = types.GenerateContentConfig(
-        tools=tools,
-        system_instruction=system_prompt,
+    config = dataclasses.replace(
+        DEFAULT_LLM_CONFIG,
+        system_prompt=system_prompt or "",
     )
-    current = list(contents)
-
-    while True:
-        res = await asyncio.to_thread(
-            lambda c=current: _client.models.generate_content(
-                model=_MODEL,
-                contents=c,
-                config=config,
-            )
-        )
-
-        candidate = res.candidates[0]
-        function_calls = [
-            part.function_call
-            for part in candidate.content.parts
-            if part.function_call
-        ]
-
-        if not function_calls:
-            return res.text
-
-        current.append(candidate.content)
-
-        responses = []
-        for fc in function_calls:
-            try:
-                result = dispatcher(fc.name, dict(fc.args))
-            except Exception as e:
-                result = {"error": str(e)}
-            responses.append(
-                types.Part(
-                    function_response=types.FunctionResponse(
-                        name=fc.name,
-                        response={"result": result},
-                    )
-                )
-            )
-
-        current.append(types.Content(role="user", parts=responses))
+    messages = _to_openai_messages(contents)
+    return await asyncio.to_thread(call_llm, config, messages, tools, dispatcher)

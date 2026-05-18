@@ -1,10 +1,8 @@
 import dataclasses
 
-from google.genai import types
-
 from app.agents.base import Agent, AgentContext
 from app.agents.memory import MemoryStore
-from app.services.gemini import _client
+from llm import DEFAULT_LLM_CONFIG, call_llm
 from rag.store import retrieve
 
 RAG_INFO_SYSTEM_PROMPT = """Role: You are a knowledgeable, professional, and helpful AI Customer Service Agent working on behalf of a business.
@@ -85,13 +83,11 @@ class RAGInfoAgent(Agent):
 
         user_message = f"{context_block}\n\n{history_block}User: {ctx.input}"
 
-        config = types.GenerateContentConfig(system_instruction=self._system_prompt)
-        res = _client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[{"role": "user", "parts": [{"text": user_message}]}],
-            config=config,
+        config = dataclasses.replace(
+            DEFAULT_LLM_CONFIG,
+            system_prompt=self._system_prompt,
         )
-        reply = res.text
+        reply = call_llm(config, [{"role": "user", "content": user_message}])
 
         if session_id:
             self._memory.save(session_id, self.name, "user", ctx.input)

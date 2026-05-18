@@ -13,7 +13,7 @@ Supported operations (one example each):
 import ast
 from decimal import Decimal, InvalidOperation
 
-from google.genai import types
+from llm.tools import to_openai_tool
 
 _ALLOWED_NODE_TYPES = (
     ast.Expression,
@@ -78,28 +78,24 @@ def calculate(expression: str) -> float:
     return float(result)
 
 
-CALCULATOR_TOOL = types.Tool(
-    function_declarations=[
-        types.FunctionDeclaration(
-            name="calculate",
-            description=(
-                "Evaluate a plain arithmetic expression and return the exact result. "
-                "Use for any addition, subtraction, multiplication, or division — "
-                "never compute arithmetic inline. Supports parentheses and decimals."
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "expression": types.Schema(
-                        type=types.Type.STRING,
-                        description=(
-                            "Arithmetic expression string, e.g. '(200 * 3) + 50 - 15'. "
-                            "Only +, -, *, / and parentheses allowed."
-                        ),
-                    ),
-                },
-                required=["expression"],
-            ),
-        )
-    ]
+CALCULATOR_TOOL = to_openai_tool(
+    name="calculate",
+    description=(
+        "Evaluate a plain arithmetic expression and return the exact result. "
+        "Use for any addition, subtraction, multiplication, or division — "
+        "never compute arithmetic inline. Supports parentheses and decimals."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "expression": {
+                "type": "string",
+                "description": (
+                    "Arithmetic expression string, e.g. '(200 * 3) + 50 - 15'. "
+                    "Only +, -, *, / and parentheses allowed."
+                ),
+            },
+        },
+        "required": ["expression"],
+    },
 )

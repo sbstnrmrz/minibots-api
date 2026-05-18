@@ -2,10 +2,8 @@ import dataclasses
 import json
 import re
 
-from google.genai import types
-
 from app.agents.base import Agent, AgentContext
-from app.services.gemini import _client
+from llm import DEFAULT_LLM_CONFIG, call_llm
 
 INTENT_ANALYZER_SYSTEM_PROMPT = """Role: You are an Expert NLP Intent Analyzer and Neutral Spanish Translator for a conversational AI backend.
 
@@ -88,16 +86,13 @@ def TextCleanerStep(text: str) -> str:
 class IntentAnalyzerAgent(Agent):
     def run(self, ctx: AgentContext) -> AgentContext:
         cleaned = TextCleanerStep(ctx.input)
-        config = types.GenerateContentConfig(
-            system_instruction=INTENT_ANALYZER_SYSTEM_PROMPT,
+        config = dataclasses.replace(
+            DEFAULT_LLM_CONFIG,
+            system_prompt=INTENT_ANALYZER_SYSTEM_PROMPT,
         )
-        res = _client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[{"role": "user", "parts": [{"text": cleaned}]}],
-            config=config,
-        )
+        reply = call_llm(config, [{"role": "user", "content": cleaned}])
         try:
-            parsed = json.loads(res.text)
+            parsed = json.loads(reply)
             retrieval_query = parsed.get("intencion") or ctx.input
         except (json.JSONDecodeError, AttributeError):
             retrieval_query = ctx.input

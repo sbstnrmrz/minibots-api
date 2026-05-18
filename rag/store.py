@@ -5,12 +5,12 @@ from typing import Any, Callable
 
 import numpy as np
 import psycopg2
-from google.genai import types
 from markitdown import MarkItDown
 from pgvector.psycopg2 import register_vector
 
 from app.config import DATABASE_URL
-from app.services.gemini import _client
+from llm import embed as _embed_llm
+from llm.tools import to_openai_tool
 
 _md = MarkItDown()
 
@@ -45,8 +45,7 @@ def _connect():
 
 
 def _embed(text: str) -> list[float]:
-    res = _client.models.embed_content(model=_EMBED_MODEL, contents=text)
-    return res.embeddings[0].values
+    return _embed_llm(text, model=_EMBED_MODEL)
 
 
 def _read_file(file_path: str) -> str:
@@ -123,34 +122,30 @@ def get_namespace(scope_type: str, scope_id: int) -> str | None:
         return row[0] if row else None
 
 
-_RAG_TOOL_DECLARATION = types.Tool(
-    function_declarations=[
-        types.FunctionDeclaration(
-            name="retrieve_documents",
-            description=(
-                "Search the knowledge base for information relevant to the query. "
-                "Call this whenever the user asks something that may be answered by uploaded documents."
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "query": types.Schema(
-                        type=types.Type.STRING,
-                        description="The search query to look up in the knowledge base.",
-                    ),
-                    "top_k": types.Schema(
-                        type=types.Type.INTEGER,
-                        description="Number of results to return (default 5).",
-                    ),
-                },
-                required=["query"],
-            ),
-        )
-    ]
+_RAG_TOOL_DECLARATION = to_openai_tool(
+    name="retrieve_documents",
+    description=(
+        "Search the knowledge base for information relevant to the query. "
+        "Call this whenever the user asks something that may be answered by uploaded documents."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query to look up in the knowledge base.",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Number of results to return (default 5).",
+            },
+        },
+        "required": ["query"],
+    },
 )
 
 
-def make_rag_tool(namespace: str) -> types.Tool:
+def make_rag_tool(namespace: str) -> dict:
     _validate_namespace(namespace)
     return _RAG_TOOL_DECLARATION
 
