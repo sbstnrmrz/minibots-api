@@ -11,7 +11,8 @@ from app.routers import bots, chat, templates, products, documents
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    format="%(asctime)s %(levelname)-5s %(name)-9s │ %(message)s",
+    datefmt="%H:%M:%S",
 )
 # httpx logs every request at INFO — redundant with the llm.client call logs.
 logging.getLogger("httpx").setLevel(logging.WARNING)

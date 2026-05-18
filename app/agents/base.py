@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.agents.memory import MemoryStore
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pipeline")
 
 
 @dataclass
@@ -42,11 +42,9 @@ class Pipeline:
         current = ctx
         session_id = ctx.chat_id
 
-        chain = " → ".join(a.name for a in self.agents)
-        logger.info(
-            "Pipeline start chat_id=%s agents=[%s] input: %s",
-            session_id, chain, current.input,
-        )
+        chain = " → ".join(a.name.removesuffix("Agent") for a in self.agents)
+        logger.info("┌─ Pipeline start  chat_id=%s  agents=[%s]", session_id, chain)
+        logger.info("│  input: %s", current.input)
 
         for agent in self.agents:
             raw_input = current.input
@@ -63,14 +61,14 @@ class Pipeline:
                     )
                 self._memory.save(session_id, agent.name, "user", raw_input)
 
-            logger.info("[%s] input: %s", agent.name, current.input)
+            short = agent.name.removesuffix("Agent")
+            logger.info("│  %s ▸ in:  %s", short, current.input)
             current = agent.run(current)
-            logger.info("[%s] output: %s", agent.name, current.input)
+            logger.info("│  %s ▸ out: %s", short, current.input)
 
             if self._memory and session_id:
                 self._memory.save(session_id, agent.name, "assistant", current.input)
 
-        logger.info(
-            "Pipeline done chat_id=%s output: %s", session_id, current.input
-        )
+        logger.info("└─ Pipeline done   chat_id=%s", session_id)
+        logger.info("   output: %s", current.input)
         return current.input

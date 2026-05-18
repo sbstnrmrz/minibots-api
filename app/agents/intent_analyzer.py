@@ -6,7 +6,7 @@ import re
 from app.agents.base import Agent, AgentContext
 from llm import DEFAULT_LLM_CONFIG, call_llm
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("intent")
 
 INTENT_ANALYZER_SYSTEM_PROMPT = """Role: You are an Expert NLP Intent Analyzer and Neutral Spanish Translator for a conversational AI backend.
 
@@ -98,8 +98,8 @@ class IntentAnalyzerAgent(Agent):
             parsed = json.loads(reply)
             retrieval_query = parsed.get("intencion") or ctx.input
         except (json.JSONDecodeError, AttributeError):
-            logger.warning("IntentAnalyzer: non-JSON reply, falling back to raw input")
+            logger.warning("│  intent ▸ non-JSON reply, using raw input")
             retrieval_query = ctx.input
 
-        logger.info("IntentAnalyzer: retrieval_query=%s", retrieval_query)
+        logger.info("│  intent ▸ retrieval_query: %s", retrieval_query)
         return dataclasses.replace(ctx, retrieval_query=retrieval_query)

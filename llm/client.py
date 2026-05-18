@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("llm")
 
 # Max chars of message/response content written to a single log line.
 _LOG_PREVIEW = 500
@@ -133,11 +133,12 @@ def call_llm(
 
     tool_names = [t["function"]["name"] for t in tools] if tools else []
     logger.info(
-        "LLM call → provider=%s model=%s messages=%d tools=%s",
-        config.provider.value, config.model, len(current), tool_names or "none",
+        "   → %s/%s  msgs=%d  tools=%s",
+        config.provider.value, config.model, len(current),
+        ",".join(tool_names) if tool_names else "none",
     )
     for m in current:
-        logger.debug("  msg[%s]: %s", m.get("role"), _preview(m.get("content") or ""))
+        logger.debug("     msg[%s]: %s", m.get("role"), _preview(m.get("content") or ""))
 
     round_n = 0
     while True:
@@ -151,7 +152,7 @@ def call_llm(
                 tools=tools or openai.NOT_GIVEN,
             )
         except Exception as e:
-            logger.error("LLM call failed [%s/%s]: %s", config.provider.value, config.model, e)
+            logger.error("   ✗ %s/%s call failed: %s", config.provider.value, config.model, e)
             raise RuntimeError(
                 f"[{config.provider.value}] LLM call failed: {e}"
             ) from e
@@ -161,10 +162,7 @@ def call_llm(
 
         if not tool_calls:
             reply = choice.message.content or ""
-            logger.info(
-                "LLM response ← model=%s rounds=%d reply: %s",
-                config.model, round_n, _preview(reply),
-            )
+            logger.info("   ← reply (rounds=%d): %s", round_n, _preview(reply))
             return reply
 
         # Append the assistant turn that requested the tool calls.
@@ -173,12 +171,12 @@ def call_llm(
         for tc in tool_calls:
             try:
                 args = json.loads(tc.function.arguments or "{}")
-                logger.info("Tool call → %s(%s)", tc.function.name, args)
+                logger.info("   → tool %s(%s)", tc.function.name, args)
                 result = dispatcher(tc.function.name, args)  # type: ignore[misc]
-                logger.info("Tool result ← %s: %s", tc.function.name, _preview(result))
+                logger.info("   ← tool %s: %s", tc.function.name, _preview(result))
             except Exception as e:
                 result = {"error": str(e)}
-                logger.warning("Tool call failed → %s: %s", tc.function.name, e)
+                logger.warning("   ✗ tool %s failed: %s", tc.function.name, e)
             current.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -203,18 +201,16 @@ def embed(
         RuntimeError: provider API error, tagged with the provider name.
     """
     client = _get_client(provider)
-    logger.info(
-        "Embed call → provider=%s model=%s chars=%d", provider.value, model, len(text)
-    )
+    logger.info("   → embed %s/%s  chars=%d", provider.value, model, len(text))
     try:
         res = client.embeddings.create(model=model, input=text)
     except Exception as e:
-        logger.error("Embed call failed [%s/%s]: %s", provider.value, model, e)
+        logger.error("   ✗ embed %s/%s failed: %s", provider.value, model, e)
         raise RuntimeError(
             f"[{provider.value}] embedding call failed: {e}"
         ) from e
     vector = res.data[0].embedding
-    logger.info("Embed response ← model=%s dim=%d", model, len(vector))
+    logger.info("   ← embed %s  dim=%d", model, len(vector))
     return vector
 
 
