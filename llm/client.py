@@ -20,8 +20,9 @@ Required environment variables
 ------------------------------
 GEMINI_API_KEY    API key for the Gemini OpenAI-compatible endpoint.
 DEEPSEEK_API_KEY  API key for DeepSeek.
-LLM_PROVIDER      Default provider for DEFAULT_LLM_CONFIG (e.g. "GEMINI").
-LLM_MODEL         Default model for DEFAULT_LLM_CONFIG (e.g. "gemini-2.5-flash").
+LLM_PROVIDER      Default provider for DEFAULT_LLM_CONFIG (e.g. "DEEPSEEK").
+LLM_MODEL         Default model for DEFAULT_LLM_CONFIG (e.g. "deepseek-v4-flash").
+                  When unset, defaults to DEEPSEEK / deepseek-v4-flash.
 
 Adding a new provider: add one entry to `LLMProvider` and one entry to
 `_PROVIDER_SETTINGS` — nothing else changes.
@@ -181,13 +182,13 @@ def embed(
 
 
 def _default_config() -> LLMConfig:
-    """Build DEFAULT_LLM_CONFIG from env, falling back to the project's prior default."""
-    provider_name = os.getenv("LLM_PROVIDER", "GEMINI").upper()
+    """Build DEFAULT_LLM_CONFIG from env, falling back to the project default."""
+    provider_name = os.getenv("LLM_PROVIDER", "DEEPSEEK").upper()
     try:
         provider = LLMProvider(provider_name)
     except ValueError:
-        provider = LLMProvider.GEMINI
-    model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+        provider = LLMProvider.DEEPSEEK
+    model = os.getenv("LLM_MODEL", "deepseek-v4-flash")
     return LLMConfig(provider=provider, model=model)
 
 
