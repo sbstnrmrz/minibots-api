@@ -9,7 +9,7 @@ Supported providers
 GEMINI
   base_url : https://generativelanguage.googleapis.com/v1beta/openai/
   api_key  : env GEMINI_API_KEY
-  models   : gemini-2.0-flash, gemini-2.5-pro, gemini-2.5-flash
+  models   : gemini-2.5-flash, gemini-2.5-pro
 
 DEEPSEEK
   base_url : https://api.deepseek.com
