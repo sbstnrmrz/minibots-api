@@ -42,6 +42,12 @@ class Pipeline:
         current = ctx
         session_id = ctx.chat_id
 
+        chain = " → ".join(a.name for a in self.agents)
+        logger.info(
+            "Pipeline start chat_id=%s agents=[%s] input: %s",
+            session_id, chain, current.input,
+        )
+
         for agent in self.agents:
             raw_input = current.input
 
@@ -64,4 +70,7 @@ class Pipeline:
             if self._memory and session_id:
                 self._memory.save(session_id, agent.name, "assistant", current.input)
 
+        logger.info(
+            "Pipeline done chat_id=%s output: %s", session_id, current.input
+        )
         return current.input

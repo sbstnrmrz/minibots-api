@@ -1,3 +1,5 @@
+import logging
+
 from app.socket import sio, socket_app
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +8,13 @@ from app import models
 from app.database import engine
 from app.config import ALLOWED_ORIGINS
 from app.routers import bots, chat, templates, products, documents
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+# httpx logs every request at INFO — redundant with the llm.client call logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 models.Base.metadata.create_all(bind=engine)
 

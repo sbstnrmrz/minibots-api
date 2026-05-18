@@ -1,9 +1,12 @@
 import dataclasses
+import logging
 
 from app.agents.base import Agent, AgentContext
 from app.agents.memory import MemoryStore
 from llm import DEFAULT_LLM_CONFIG, call_llm
 from rag.store import retrieve
+
+logger = logging.getLogger(__name__)
 
 RAG_INFO_SYSTEM_PROMPT = """Role: You are a knowledgeable, professional, and helpful AI Customer Service Agent working on behalf of a business.
 
@@ -66,6 +69,10 @@ class RAGInfoAgent(Agent):
         query = ctx.retrieval_query or ctx.input
 
         chunks = retrieve(query=query, namespace=self._namespace, top_k=self._top_k)
+        logger.info(
+            "RAGInfoAgent: namespace=%s query=%s → %d chunks retrieved",
+            self._namespace, query, len(chunks),
+        )
 
         if chunks:
             context_block = "<retrieved_context>\n" + "\n\n".join(

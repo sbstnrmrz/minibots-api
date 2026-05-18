@@ -29,6 +29,7 @@ Adding a new provider: add one entry to `LLMProvider` and one entry to
 """
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -38,6 +39,17 @@ import openai
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+# Max chars of message/response content written to a single log line.
+_LOG_PREVIEW = 500
+
+
+def _preview(text: str) -> str:
+    """Truncate text for log output."""
+    text = str(text).replace("\n", " ")
+    return text if len(text) <= _LOG_PREVIEW else text[:_LOG_PREVIEW] + f"… (+{len(text) - _LOG_PREVIEW} chars)"
 
 
 class LLMProvider(str, Enum):
@@ -119,7 +131,17 @@ def call_llm(
     client = _get_client(config.provider)
     current = _build_messages(config, messages)
 
+    tool_names = [t["function"]["name"] for t in tools] if tools else []
+    logger.info(
+        "LLM call → provider=%s model=%s messages=%d tools=%s",
+        config.provider.value, config.model, len(current), tool_names or "none",
+    )
+    for m in current:
+        logger.debug("  msg[%s]: %s", m.get("role"), _preview(m.get("content") or ""))
+
+    round_n = 0
     while True:
+        round_n += 1
         try:
             res = client.chat.completions.create(
                 model=config.model,
@@ -129,6 +151,7 @@ def call_llm(
                 tools=tools or openai.NOT_GIVEN,
             )
         except Exception as e:
+            logger.error("LLM call failed [%s/%s]: %s", config.provider.value, config.model, e)
             raise RuntimeError(
                 f"[{config.provider.value}] LLM call failed: {e}"
             ) from e
@@ -137,7 +160,12 @@ def call_llm(
         tool_calls = choice.message.tool_calls
 
         if not tool_calls:
-            return choice.message.content or ""
+            reply = choice.message.content or ""
+            logger.info(
+                "LLM response ← model=%s rounds=%d reply: %s",
+                config.model, round_n, _preview(reply),
+            )
+            return reply
 
         # Append the assistant turn that requested the tool calls.
         current.append(choice.message.model_dump(exclude_none=True))
@@ -145,9 +173,12 @@ def call_llm(
         for tc in tool_calls:
             try:
                 args = json.loads(tc.function.arguments or "{}")
+                logger.info("Tool call → %s(%s)", tc.function.name, args)
                 result = dispatcher(tc.function.name, args)  # type: ignore[misc]
+                logger.info("Tool result ← %s: %s", tc.function.name, _preview(result))
             except Exception as e:
                 result = {"error": str(e)}
+                logger.warning("Tool call failed → %s: %s", tc.function.name, e)
             current.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -172,13 +203,19 @@ def embed(
         RuntimeError: provider API error, tagged with the provider name.
     """
     client = _get_client(provider)
+    logger.info(
+        "Embed call → provider=%s model=%s chars=%d", provider.value, model, len(text)
+    )
     try:
         res = client.embeddings.create(model=model, input=text)
     except Exception as e:
+        logger.error("Embed call failed [%s/%s]: %s", provider.value, model, e)
         raise RuntimeError(
             f"[{provider.value}] embedding call failed: {e}"
         ) from e
-    return res.data[0].embedding
+    vector = res.data[0].embedding
+    logger.info("Embed response ← model=%s dim=%d", model, len(vector))
+    return vector
 
 
 def _default_config() -> LLMConfig:
