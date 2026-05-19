@@ -7,11 +7,32 @@ from app.agents.base import Agent, Pipeline
 from app.agents.examples import SanitizerAgent, TruncateAgent
 from app.agents.generic_info_agent import GenericInfoAgent
 from app.agents.intent_analyzer import IntentAnalyzerAgent
-from app.agents.rag_info_agent import RAGInfoAgent
+from app.agents.rag_info_agent import RAGInfoAgent, RAG_INFO_SYSTEM_PROMPT
 from rag.store import get_namespace
 
 if TYPE_CHECKING:
     from app.agents.memory import MemoryStore
+
+
+def _links_context(agent_config: models.AgentConfig) -> str:
+    """Build an 'Available resources' block from the agent's links, or empty string."""
+    links: list[dict] = agent_config.links or []
+    if not links:
+        return ""
+    lines = "\n".join(f"- {l['label']}: {l['url']}" for l in links if l.get("url"))
+    return f"\n\nAvailable resources (call fetch_google_sheet to read a spreadsheet):\n{lines}"
+
+
+def _augment_tools_from_links(agent_config: models.AgentConfig, tool_names: list[str]) -> list[str]:
+    """Auto-inject sheets_lookup when the agent has Google Sheets links."""
+    links: list[dict] = agent_config.links or []
+    has_sheets = any(
+        "docs.google.com/spreadsheets" in (l.get("url") or "")
+        for l in links
+    )
+    if has_sheets and "sheets_lookup" not in tool_names:
+        return [*tool_names, "sheets_lookup"]
+    return tool_names
 
 
 def _build_agent(
@@ -21,6 +42,8 @@ def _build_agent(
 ) -> Agent:
     config: dict = agent_config.config_json or {}
     agent_type: str = agent_config.agent_type
+    tool_names = _augment_tools_from_links(agent_config, tool_names)
+    links_ctx = _links_context(agent_config)
 
     if agent_type == "intent_analyzer":
         return IntentAnalyzerAgent(tool_names=tool_names)
@@ -39,17 +62,20 @@ def _build_agent(
                 f"and no RAG source registered for agent {agent_config.id}"
                 + (f" or workflow {workflow_id}" if workflow_id is not None else "")
             )
+        base_prompt = agent_config.system_prompt or RAG_INFO_SYSTEM_PROMPT
         return RAGInfoAgent(
             namespace=namespace,
-            system_prompt=agent_config.system_prompt,  # None → RAGInfoAgent uses its default
+            system_prompt=base_prompt + links_ctx,
             top_k=config.get("top_k", 5),
             tool_names=tool_names,
         )
 
     if agent_type == "generic_info":
-        kwargs = {"tool_names": tool_names}
-        if agent_config.system_prompt:
-            kwargs["system_prompt"] = agent_config.system_prompt
+        base_prompt = agent_config.system_prompt or ""
+        kwargs: dict = {"tool_names": tool_names}
+        combined = base_prompt + links_ctx
+        if combined:
+            kwargs["system_prompt"] = combined
         return GenericInfoAgent(**kwargs)
 
     if agent_type == "sanitizer":

@@ -3,6 +3,7 @@ from typing import Any, Callable
 
 from app.tools.calculator import CALCULATOR_TOOL, calculate
 from app.tools.row_lookup import ROW_LOOKUP_TOOL, lookup_rows
+from app.tools.sheets_lookup import SHEETS_LOOKUP_TOOL, fetch_google_sheet
 
 
 @dataclass
@@ -14,6 +15,7 @@ class ToolEntry:
 TOOL_REGISTRY: dict[str, ToolEntry] = {
     "calculator": ToolEntry(declaration=CALCULATOR_TOOL, fn=calculate),
     "csv_lookup": ToolEntry(declaration=ROW_LOOKUP_TOOL, fn=lookup_rows),
+    "sheets_lookup": ToolEntry(declaration=SHEETS_LOOKUP_TOOL, fn=fetch_google_sheet),
 }
 
 ALL_TOOLS = [entry.declaration for entry in TOOL_REGISTRY.values()]
@@ -74,4 +76,6 @@ __all__ = [
     "ROW_LOOKUP_TOOL",
     "calculate",
     "CALCULATOR_TOOL",
+    "fetch_google_sheet",
+    "SHEETS_LOOKUP_TOOL",
 ]

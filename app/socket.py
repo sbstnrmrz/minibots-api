@@ -149,12 +149,18 @@ async def send_message(sid, data):
             )
         namespace = f"agent_{agent_config.id}" if agent_config else None
         if namespace and has_rag_table(namespace):
+            from app.agents.factory import _augment_tools_from_links, _links_context
+            from app.agents.rag_info_agent import RAG_INFO_SYSTEM_PROMPT
+            tool_names = _augment_tools_from_links(agent_config, [])
+            links_ctx = _links_context(agent_config)
+            base_prompt = agent_config.system_prompt or RAG_INFO_SYSTEM_PROMPT
             rag_pipeline = Pipeline([
                 IntentAnalyzerAgent(),
                 RAGInfoAgent(
                     namespace=namespace,
-                    system_prompt=agent_config.system_prompt,
+                    system_prompt=base_prompt + links_ctx,
                     session_id=chat_id,
+                    tool_names=tool_names,
                 ),
             ])
             ctx = AgentContext(input=message, chat_id=chat_id)
