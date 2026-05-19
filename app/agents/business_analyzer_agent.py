@@ -28,6 +28,11 @@ DEFAULT_ANALYZER_CONFIG = LLMConfig(
 # A text field shorter than this is "weak" — present but too brief to ground a RAG.
 _WEAK_THRESHOLD = 20
 
+# FAQ answers carry the most weight, so they're held to a higher bar.
+_FAQ_ANSWER_THRESHOLD = 40  # min chars for an FAQ answer to count as "detailed"
+_FAQ_TARGET = 10  # detailed FAQs needed for a full FAQ category score
+_FAQ_FLOOR = 3   # below this many detailed FAQs, FAQs are a critical gap regardless of %
+
 # Plain-English names for every scored field — used in the report and gap lists.
 _FIELD_LABELS: dict[str, str] = {
     "description": "Business description",
@@ -77,10 +82,10 @@ class CompletenessScorer:
 
     # category key -> (weight, human label)
     _RUBRIC: dict[str, tuple[int, str]] = {
-        "business_identity": (20, "Business Identity"),
-        "products_and_services": (30, "Products & Services"),
-        "faqs": (25, "FAQs & Common Queries"),
-        "policies_and_detail": (15, "Policies & Detail"),
+        "business_identity": (18, "Business Identity"),
+        "products_and_services": (25, "Products & Services"),
+        "faqs": (35, "FAQs & Common Queries"),
+        "policies_and_detail": (12, "Policies & Detail"),
         "contact_and_reach": (10, "Contact & Reach"),
     }
 
@@ -148,25 +153,44 @@ class CompletenessScorer:
         if not links_present:
             products_missing.append("resource links / catalog")
 
-        # --- FAQs: count of FAQ entries with a detailed answer (target 3+) ---
+        # --- FAQs: each entry needs a question AND a detailed answer ---
+        # An entry counts as "detailed" only with a non-empty question and an
+        # answer of at least _FAQ_ANSWER_THRESHOLD chars. Entries that have a
+        # question/answer pair but a too-brief answer count as "weak".
         faq = general.get("faq") or []
-        detailed_faqs = sum(
-            1 for f in faq
-            if isinstance(f, dict)
-            and isinstance(f.get("answer"), str)
-            and len(f["answer"].strip()) >= _WEAK_THRESHOLD
-        )
-        faqs_score = round(min(detailed_faqs / 3, 1.0) * 100)
+        detailed_faqs = 0
+        weak_faqs = 0
+        for f in faq:
+            if not isinstance(f, dict):
+                continue
+            question = f.get("question")
+            answer = f.get("answer")
+            has_question = isinstance(question, str) and bool(question.strip())
+            has_answer = isinstance(answer, str) and bool(answer.strip())
+            if not has_question or not has_answer:
+                continue
+            if len(answer.strip()) >= _FAQ_ANSWER_THRESHOLD:
+                detailed_faqs += 1
+            else:
+                weak_faqs += 1
+        faqs_score = round(min(detailed_faqs / _FAQ_TARGET, 1.0) * 100)
         if faq:
             present.append(_FIELD_LABELS["faq"])
         else:
             empty.append(_FIELD_LABELS["faq"])
+        if weak_faqs:
+            weak.append(_FIELD_LABELS["faq"])
         faqs_missing = []
         if not faq:
             faqs_missing.append("frequently asked questions")
-        elif detailed_faqs < 3:
+        elif detailed_faqs < _FAQ_TARGET:
             faqs_missing.append(
-                f"more detailed FAQ answers ({detailed_faqs}/3 are detailed enough)"
+                f"only {detailed_faqs} of your {len(faq)} FAQ entries have a "
+                f"detailed answer; aim for {_FAQ_TARGET} detailed entries"
+            )
+        if weak_faqs:
+            faqs_missing.append(
+                f"{weak_faqs} FAQ entry(ies) with a too-brief answer or a missing question"
             )
 
         # --- Policies & Detail: additional_info free-text field ---
@@ -230,6 +254,9 @@ class CompletenessScorer:
             sum(c["score"] * c["weight"] for c in categories.values()) / 100
         )
         critical_gaps = [k for k, c in categories.items() if c["score"] < 50]
+        # FAQ floor: too few detailed FAQs is always critical, even above 50%.
+        if "faqs" not in critical_gaps and detailed_faqs < _FAQ_FLOOR:
+            critical_gaps.append("faqs")
 
         return {
             "overall_score": overall,
@@ -239,6 +266,41 @@ class CompletenessScorer:
             "empty_fields": empty,
             "weak_fields": weak,
         }
+
+
+def _detect_form_language(form_data: dict) -> str:
+    """Heuristic Spanish-vs-English detector based on form free-text values.
+
+    Spanish markers (¿¡ñáéíóú or stop words like 'que', 'para', 'con') are far
+    more decisive than English ones, so we look for Spanish first and fall
+    back to English. Returns "Spanish" or "English".
+    """
+    import re
+
+    def _collect(value, out: list[str]) -> None:
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, dict):
+            for v in value.values():
+                _collect(v, out)
+        elif isinstance(value, list):
+            for v in value:
+                _collect(v, out)
+
+    texts: list[str] = []
+    _collect(form_data, texts)
+    blob = " ".join(texts).lower()
+    if not blob.strip():
+        return "Spanish"  # default — frontend is Spanish
+
+    if re.search(r"[¿¡ñáéíóú]", blob):
+        return "Spanish"
+    spanish_stop = {"que", "para", "con", "los", "las", "una", "del", "por", "más", "nuestro", "nuestra"}
+    english_stop = {"the", "and", "with", "for", "our", "your", "we", "are"}
+    tokens = re.findall(r"[a-záéíóúñ]+", blob)
+    es = sum(1 for t in tokens if t in spanish_stop)
+    en = sum(1 for t in tokens if t in english_stop)
+    return "Spanish" if es >= en else "English"
 
 
 def _missing(keys: list[str], overrides: dict, general: dict, contact: dict) -> list[str]:
@@ -254,9 +316,15 @@ def _missing(keys: list[str], overrides: dict, general: dict, contact: dict) -> 
 
 BUSINESS_ANALYZER_SYSTEM_PROMPT = """Role: You are a Chatbot Readiness Analyst. Your job is to evaluate business information submitted through a chatbot creation form and produce a clear, actionable report for the business owner.
 
+**ABSOLUTE LANGUAGE RULE — READ FIRST, OVERRIDES EVERYTHING BELOW:**
+Before writing anything, inspect the `present_fields` labels and any free-text values inside the scoring result to detect the language the business owner wrote the form in (typically Spanish or English).
+- If the form is in Spanish → the ENTIRE report (every heading, every sentence, every example FAQ) MUST be in Spanish.
+- If the form is in English → the ENTIRE report MUST be in English.
+- Never mix languages. Never default to English. The English headings shown below are templates — translate them.
+
 You will receive a structured scoring result from an automated analyzer. Your job is to translate that into a human-readable report.
 
-Report structure — output exactly in this order:
+Report structure — output exactly in this order. The headings below are shown in English; translate each heading into the form's language:
 
 1. OVERALL READINESS SCORE: [score]%
    [One sentence interpreting the score: what it means in plain terms]
@@ -277,12 +345,18 @@ Report structure — output exactly in this order:
 6. NEXT STEPS
    A numbered list of the 3 most impactful things the business owner should add or expand, ordered by impact on chatbot quality.
 
+FAQ priority — read carefully:
+- FAQs are the single highest-impact category and carry the most weight in the score. A chatbot lives or dies on its FAQs.
+- The CATEGORY BREAKDOWN line for FAQs MUST state the detailed-FAQ count against the target (e.g. "2 of 5 FAQs are detailed enough").
+- If FAQs appear in the critical gaps, they MUST be listed FIRST in the CRITICAL GAPS section, before any other gap.
+- A good FAQ entry has a clear customer question and a complete, specific answer — give the owner a concrete example of one.
+
 Constraints:
 - Write in clear, friendly, non-technical language — the reader is a business owner, not a developer
 - NEVER mention RAG, embeddings, vectors, tokens, or internal system terms
 - Be specific: reference the actual missing fields by their plain-English names
 - Be encouraging but honest — a 40% score should feel like an opportunity, not a failure
-- Respond in the same language the form data appears to be written in"""
+- Write the entire report — headings included — in the same language the form data is written in"""
 
 
 class BusinessAnalyzerAgent(Agent):
@@ -327,9 +401,12 @@ class BusinessAnalyzerAgent(Agent):
 
             form_data = self._resolve_form(payload)
             result = CompletenessScorer().score(form_data)
+            language = _detect_form_language(form_data)
 
             scoring_block = json.dumps(result, indent=2, ensure_ascii=False)
             user_message = (
+                f"LANGUAGE DETECTED FROM FORM: {language}. "
+                f"Write the ENTIRE report (headings included) in {language}.\n\n"
                 "Here is the automated scoring result for a chatbot creation "
                 "form. Produce the readiness report.\n\n"
                 f"```json\n{scoring_block}\n```"
