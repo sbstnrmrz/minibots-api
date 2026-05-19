@@ -16,9 +16,13 @@ from app.agents.base import Agent, AgentContext
 from llm import LLMConfig, LLMProvider, call_llm
 
 # Default model — the analyst report benefits from the stronger "pro" model.
+# max_tokens is generous: the pro model spends tokens on reasoning before the
+# answer, the report has 6 sections, and this agent runs infrequently — a
+# low limit leaves the content empty.
 DEFAULT_ANALYZER_CONFIG = LLMConfig(
     provider=LLMProvider.DEEPSEEK,
     model="deepseek-v4-pro",
+    max_tokens=8000,
 )
 
 # A text field shorter than this is "weak" — present but too brief to ground a RAG.
@@ -90,14 +94,18 @@ class CompletenessScorer:
         weak: list[str] = []
 
         # --- text-field classification, recorded for the global field lists ---
-        def grade_text(container: dict, key: str) -> float:
-            """Return 0.0 / 0.5 / 1.0 and record the field's state globally."""
+        def grade_text(container: dict, key: str, check_weak: bool = True) -> float:
+            """Return 0.0 / 0.5 / 1.0 and record the field's state globally.
+
+            check_weak=False for fields that are legitimately short (names,
+            phone, company name) — those score 1.0 as long as they're filled.
+            """
             label = _FIELD_LABELS.get(key, key)
             value = container.get(key) or _alt(container, key)
             if not isinstance(value, str) or not value.strip():
                 empty.append(label)
                 return 0.0
-            if len(value.strip()) < _WEAK_THRESHOLD:
+            if check_weak and len(value.strip()) < _WEAK_THRESHOLD:
                 weak.append(label)
                 present.append(label)
                 return 0.5
@@ -110,7 +118,7 @@ class CompletenessScorer:
 
         # --- Business Identity: company_name, description, mission, vision ---
         identity_scores = [
-            grade_text(contact, "company_name"),
+            grade_text(contact, "company_name", check_weak=False),
             grade_text(general, "description"),
             grade_text(general, "mission"),
             grade_text(general, "vision"),
@@ -169,8 +177,8 @@ class CompletenessScorer:
             policies_missing.append("operating hours, location, payment & return policies")
 
         # --- Contact & Reach: contact name, phone, any social media ---
-        name_score = grade_text(contact, "name")
-        phone_score = grade_text(contact, "phone")
+        name_score = grade_text(contact, "name", check_weak=False)
+        phone_score = grade_text(contact, "phone", check_weak=False)
         social = general.get("social_media") or {}
         social_present = any(
             isinstance(v, str) and v.strip() for v in social.values()
