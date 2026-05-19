@@ -23,7 +23,7 @@ uv run python setup_test.py
 
 ## Architecture
 
-FastAPI backend for configurable AI chatbots ("minibots") powered by Google Gemini (`gemini-2.5-flash`).
+FastAPI backend for configurable AI chatbots ("minibots"). All LLM calls go through the `llm/` provider abstraction (default: DeepSeek `deepseek-v4-flash`). Embeddings still use Gemini (`gemini-embedding-001`).
 
 **Request flow for chat:**
 1. Client connects via WebSocket at `/ws/chat`, sends JSON `{message, bot_id, chat_id}`.
@@ -35,7 +35,7 @@ FastAPI backend for configurable AI chatbots ("minibots") powered by Google Gemi
 4. Routing (in priority order):
    - `bot.workflow_id` set → `build_pipeline(workflow_id, db)` → `pipeline.run(AgentContext)`
    - no workflow_id, `bot_type == "rag_info"` + RAG data exists → legacy hardcoded `IntentAnalyzerAgent → RAGInfoAgent` pipeline
-   - no workflow_id, RAG data exists → `generate_with_tools()` with `retrieve_documents` Gemini tool
+   - no workflow_id, RAG data exists → `generate_with_tools()` with `retrieve_documents` tool
    - no RAG → `generate_reply()` with full history
 5. Both user and model messages are persisted to `chat_messages` (with `chat_id` when present).
 
@@ -44,6 +44,7 @@ FastAPI backend for configurable AI chatbots ("minibots") powered by Google Gemi
 app/
 ├── main.py          # app init, middleware, router includes only
 ├── config.py        # all env vars (GEMINI_API_KEY, DATABASE_URL, ALLOWED_ORIGINS)
+│                     # LLM provider env vars (DEEPSEEK_API_KEY, LLM_PROVIDER, LLM_MODEL) read in llm/client.py
 ├── database.py      # SQLAlchemy engine, get_db (FastAPI dep), db_context (context manager for WS)
 ├── models.py        # ORM: Bot, ChatMessage, Chat, Workflow, AgentConfig, WorkflowAgent, AgentTool, RagSource
 ├── templates.py     # TEMPLATES dict (id, name, emoji, description, system_prompt, needs_sheet)
@@ -56,7 +57,8 @@ app/
 │   ├── templates.py # GET /templates
 │   └── documents.py # POST /bots/{id}/documents, /workflows/{id}/documents, /agent-configs/{id}/documents
 ├── services/
-│   ├── gemini.py    # generate_reply(), generate_with_tools() — Gemini client wrappers
+│   ├── gemini.py    # generate_reply(), generate_with_tools() — async wrappers over llm.call_llm;
+│   │                # convert Gemini-format `contents` → OpenAI `messages` (kept for chat.py/socket.py compat)
 │   └── sheets.py    # fetch_sheet() — fetches Google Sheets CSV via httpx
 ├── agents/
 │   ├── base.py              # AgentContext dataclass + Agent ABC + Pipeline
@@ -72,6 +74,10 @@ app/
     └── calculator.py  # calculate (fn) + CALCULATOR_TOOL — safe AST arithmetic with Decimal precision
 rag/
 └── store.py           # init_rag_table, ingest, retrieve, has_rag_table, get_namespace, make_rag_tool, make_rag_dispatcher
+llm/
+├── client.py          # LLMProvider, LLMConfig, call_llm() (single choke point), embed(), DEFAULT_LLM_CONFIG
+├── tools.py           # to_openai_tool() — adapter to OpenAI function-calling schema
+└── __init__.py        # public exports
 ```
 
 **Adding a new feature:** create `routers/X.py` + `services/X.py` if needed, then `app.include_router(X.router)` in `main.py`.
@@ -99,23 +105,34 @@ rag/
 **`GenericInfoAgent`** — general-purpose conversational agent (`app/agents/generic_info_agent.py`):
 - `GenericInfoAgent(system_prompt=GENERIC_INFO_SYSTEM_PROMPT, session_id=None, tool_names=[])`
 - `run(ctx)` — uses `ctx.input` as the user message; no RAG retrieval
-- On each call: loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls Gemini, saves exchange to memory
-- `GENERIC_INFO_SYSTEM_PROMPT` — same 3-step structure as RAGInfoAgent but answers from full Gemini knowledge; no grounding restriction
+- On each call: loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls `llm.call_llm` with `DEFAULT_LLM_CONFIG`, saves exchange to memory
+- `GENERIC_INFO_SYSTEM_PROMPT` — same 3-step structure as RAGInfoAgent but answers from the model's full knowledge; no grounding restriction
 - Use when no domain-specific knowledge base is needed
 
 **`RAGInfoAgent`** — grounded customer service agent (`app/agents/rag_info_agent.py`):
 - `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None, tool_names=[])`
 - `run(ctx)` — uses `ctx.retrieval_query or ctx.input` for RAG retrieval; `ctx.input` as user-facing message
-- On each call: retrieves top-k chunks, loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls Gemini, saves exchange to memory
+- On each call: retrieves top-k chunks, loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls `llm.call_llm` with `DEFAULT_LLM_CONFIG`, saves exchange to memory
 - `RAG_INFO_SYSTEM_PROMPT` — 4-step logic: ground in context → scope check → calculator delegation → response
 - Refuses out-of-scope questions; responds honestly when context has no answer — never hallucinate
 
+**LLM provider abstraction** — `llm/`:
+- All LLM calls route through `call_llm(config, messages, tools=None, dispatcher=None)` — the single choke point. No agent imports a provider SDK directly.
+- Every provider (Gemini, DeepSeek) is reached via the OpenAI Python SDK against its OpenAI-compatible endpoint. Add a provider with one `LLMProvider` enum entry + one `_PROVIDER_SETTINGS` entry.
+- `LLMConfig(provider, model, max_tokens, temperature, system_prompt)` — per-call config.
+- `DEFAULT_LLM_CONFIG` — built from env `LLM_PROVIDER` / `LLM_MODEL`; falls back to `DEEPSEEK` / `deepseek-v4-flash`. All agents use this.
+- `call_llm` runs the tool-execution loop internally: model emits tool_call → `dispatcher` runs it → result fed back → repeats until plain-text reply.
+- `embed(text, model="gemini-embedding-001")` — embeddings; DeepSeek has no embeddings endpoint, so this stays on Gemini.
+- `to_openai_tool(name, description, parameters)` (`llm/tools.py`) — builds the OpenAI function-calling tool schema.
+- Clients cached at module load, one per provider.
+
 **Tool registry** — `app/tools/__init__.py`:
-- `TOOL_REGISTRY: dict[str, ToolEntry]` — maps tool name → `(declaration: types.Tool, fn: Callable)`
-- `get_tools_for_agent(tool_names)` → list of Gemini `Tool` declarations for an agent's subset
-- `make_dispatcher_for_agent(tool_names)` → scoped dispatcher that only allows the agent's tools
+- `TOOL_REGISTRY: dict[str, ToolEntry]` — maps registry key → `(declaration: dict, fn: Callable)`; declaration is an OpenAI-format tool dict.
+- Registry key (e.g. `calculator`, `csv_lookup`) ≠ OpenAI function name (e.g. `calculate`, `lookup_rows`). `_FN_NAME_TO_KEY` + `_resolve_key()` resolve either form.
+- `get_tools_for_agent(tool_names)` → list of OpenAI tool declarations for an agent's subset
+- `make_dispatcher_for_agent(tool_names)` → scoped dispatcher that only allows the agent's tools; accepts function name or registry key
 - `ALL_TOOLS` and `dispatch()` preserved for backward compat
-- Adding a new tool: implement in `app/tools/`, add to `TOOL_REGISTRY`, add to `AgentTool` rows in DB
+- Adding a new tool: implement in `app/tools/`, build its declaration with `to_openai_tool`, add to `TOOL_REGISTRY`, add to `AgentTool` rows in DB
 
 **RAG scoping** — `rag/store.py` + `rag_sources` table:
 - All chunks stored in single `rag_chunks(namespace, content, embedding, metadata)` table
@@ -125,7 +142,7 @@ rag/
 - `init_rag_table(namespace)` — ensures `rag_chunks` table + index exist (idempotent, namespace validated)
 - `ingest(file_path, namespace, ...)` — chunks + embeds file, inserts rows into `rag_chunks`
 - `retrieve(query, namespace, top_k=5)` — cosine similarity search filtered by namespace
-- `make_rag_tool(namespace)` + `make_rag_dispatcher(namespace)` — build a `retrieve_documents` Gemini tool and dispatcher scoped to a namespace
+- `make_rag_tool(namespace)` + `make_rag_dispatcher(namespace)` — build a `retrieve_documents` OpenAI-format tool and dispatcher scoped to a namespace
 - Namespace validated as `[a-zA-Z0-9_]+` to prevent SQL injection
 - Upload endpoints: `POST /bots/{id}/documents`, `/workflows/{id}/documents`, `/agent-configs/{id}/documents`
 
@@ -138,8 +155,11 @@ rag/
 ## Environment
 
 Copy `.env.example` to `.env` and fill in:
-- `GEMINI_API_KEY` — Google Gemini API key
+- `GEMINI_API_KEY` — Google Gemini API key (used for embeddings, and for Gemini chat if selected)
+- `DEEPSEEK_API_KEY` — DeepSeek API key (default chat provider)
+- `LLM_PROVIDER` — default chat provider: `DEEPSEEK` or `GEMINI` (optional; defaults to `DEEPSEEK`)
+- `LLM_MODEL` — default chat model (optional; defaults to `deepseek-v4-flash`)
 - `DATABASE_URL` — PostgreSQL connection string (default for local Docker: `postgresql://user:1234@localhost:5432/minibots`)
 - `ENVIRONMENT` — set to `development` to allow all CORS origins (`ALLOWED_ORIGINS=["*"]`)
 
-All env vars are read once in `app/config.py`. Database schema is auto-created on startup via SQLAlchemy `create_all`. Additional schema changes go in `migrate.py` and are run manually (no Alembic).
+App env vars are read once in `app/config.py`; LLM env vars (`DEEPSEEK_API_KEY`, `LLM_PROVIDER`, `LLM_MODEL`) are read in `llm/client.py`. Switching the chat provider globally requires only changing `LLM_PROVIDER` + `LLM_MODEL`. Database schema is auto-created on startup via SQLAlchemy `create_all`. Additional schema changes go in `migrate.py` and are run manually (no Alembic).

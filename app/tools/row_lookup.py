@@ -1,7 +1,8 @@
 from pathlib import Path
 
 import pandas as pd
-from google.genai import types
+
+from llm.tools import to_openai_tool
 
 
 def lookup_rows(file_path: str, column: str, value: str) -> list[dict]:
@@ -21,34 +22,30 @@ def lookup_rows(file_path: str, column: str, value: str) -> list[dict]:
     return df[mask].to_dict(orient="records")
 
 
-ROW_LOOKUP_TOOL = types.Tool(
-    function_declarations=[
-        types.FunctionDeclaration(
-            name="lookup_rows",
-            description=(
-                "Look up rows in a CSV or Excel file where a column value matches "
-                "the given search value (case-insensitive)."
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "file_path": types.Schema(
-                        type=types.Type.STRING,
-                        description="Path to the .csv, .xlsx, or .xls file.",
-                    ),
-                    "column": types.Schema(
-                        type=types.Type.STRING,
-                        description="Column name to search.",
-                    ),
-                    "value": types.Schema(
-                        type=types.Type.STRING,
-                        description="Value to match (case-insensitive, whitespace-stripped).",
-                    ),
-                },
-                required=["file_path", "column", "value"],
-            ),
-        )
-    ]
+ROW_LOOKUP_TOOL = to_openai_tool(
+    name="lookup_rows",
+    description=(
+        "Look up rows in a CSV or Excel file where a column value matches "
+        "the given search value (case-insensitive)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path to the .csv, .xlsx, or .xls file.",
+            },
+            "column": {
+                "type": "string",
+                "description": "Column name to search.",
+            },
+            "value": {
+                "type": "string",
+                "description": "Value to match (case-insensitive, whitespace-stripped).",
+            },
+        },
+        "required": ["file_path", "column", "value"],
+    },
 )
 
 
