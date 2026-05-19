@@ -14,5 +14,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  garage:
+    image: dxflrs/garage:v1.0.1
+    volumes:
+      - ./docker/garage.toml:/etc/garage.toml
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    ports:
+      - "3900:3900"   # S3 API
+      - "3901:3901"   # RPC
+      - "3903:3903"   # admin API
+
 volumes:
   postgres_data:
+  garage_meta:
+  garage_data:
