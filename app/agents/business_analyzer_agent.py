@@ -278,7 +278,7 @@ Constraints:
 
 
 class BusinessAnalyzerAgent(Agent):
-    """Pipeline agent: form path in (JSON string) → readiness report out."""
+    """Pipeline agent: business form (JSON string) → readiness report out."""
 
     def __init__(self, llm_config: LLMConfig | None = None) -> None:
         super().__init__()
@@ -287,8 +287,9 @@ class BusinessAnalyzerAgent(Agent):
     def run(self, ctx: "AgentContext | str") -> "AgentContext | str":
         """Accepts an AgentContext (Pipeline) or a raw JSON string (direct call).
 
-        The JSON string carries `form_path`. Returns the report in the same
-        shape it was given: AgentContext in → AgentContext out, str in → str out.
+        Returns the report in the same shape it was given: AgentContext in →
+        AgentContext out, str in → str out. See `_resolve_form` for the
+        accepted JSON input shapes.
         """
         raw = ctx.input if isinstance(ctx, AgentContext) else ctx
         report = self._analyze(raw)
@@ -296,12 +297,27 @@ class BusinessAnalyzerAgent(Agent):
             return dataclasses.replace(ctx, input=report)
         return report
 
+    @staticmethod
+    def _resolve_form(payload: dict) -> dict:
+        """Resolve the form dict from the parsed JSON input. Accepted shapes:
+
+        - {"form_path": "/path/to/form.json"}  → read the file from disk
+        - {"form_data": {...}}                 → use the inline form dict
+        - {"general": {...}, "contact": {...}} → the payload IS the form
+        """
+        if "form_path" in payload:
+            return FormReader().read(payload["form_path"])
+        if "form_data" in payload:
+            return payload["form_data"]
+        return payload
+
     def _analyze(self, raw_input: str) -> str:
         try:
             payload = json.loads(raw_input)
-            form_path = payload["form_path"]
+            if not isinstance(payload, dict):
+                raise ValueError("Input JSON must be an object.")
 
-            form_data = FormReader().read(form_path)
+            form_data = self._resolve_form(payload)
             result = CompletenessScorer().score(form_data)
 
             scoring_block = json.dumps(result, indent=2, ensure_ascii=False)

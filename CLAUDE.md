@@ -112,8 +112,9 @@ llm/
 
 **`BusinessAnalyzerAgent`** — chatbot-form readiness scorer (`app/agents/business_analyzer_agent.py`):
 - `BusinessAnalyzerAgent(llm_config=None)` — defaults to `DEFAULT_ANALYZER_CONFIG` (`DEEPSEEK` / `deepseek-v4-pro`, stronger model than other agents)
-- `run(ctx)` accepts an `AgentContext` (Pipeline) or a raw JSON string (direct call); `ctx.input` is a JSON string `{"form_path": "..."}`
-- Flow: parse `form_path` → `FormReader().read()` → `CompletenessScorer().score()` → `call_llm` with the scoring result in the user message → returns a human-readable readiness report
+- `run(ctx)` accepts an `AgentContext` (Pipeline) or a raw JSON string (direct call)
+- Input JSON accepts 3 shapes: `{"form_path": "..."}` (read file), `{"form_data": {...}}` (inline form dict), or the raw form payload itself (`{"general": {...}, "contact": {...}, "links": [...]}`)
+- Flow: resolve form → `CompletenessScorer().score()` → `call_llm` with the scoring result in the user message → returns a human-readable readiness report; `FormReader` is used only for the `form_path` shape
 - On any error returns `{"error": "..."}` as a JSON string — never crashes
 - `FormReader` — pure Python, reads `.json` / `.yaml` / `.yml` / `.toml` (YAML needs `pyyaml`, lazily imported)
 - `CompletenessScorer` — pure Python, scores 5 weighted categories (Business Identity 20%, Products & Services 30%, FAQs 25%, Policies & Detail 15%, Contact & Reach 10%); returns `overall_score`, per-category breakdown, `critical_gaps`, `present_fields`, `empty_fields`, `weak_fields`
