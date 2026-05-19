@@ -13,7 +13,9 @@ from app.config import ALLOWED_ORIGINS
 from app.database import db_context
 from app.services.gemini import generate_reply, generate_with_tools
 from app.services.sheets import fetch_sheet
-from rag.store import get_namespace, make_rag_tool, make_rag_dispatcher
+from rag.store import get_namespace, has_rag_table, make_rag_tool, make_rag_dispatcher
+
+DEFAULT_TENANT_ID = "fcbb503a-6e49-4e4c-ac58-fc232064513e"  # Crazy Imagine
 
 logger = logging.getLogger("uvicorn")
 
@@ -26,6 +28,7 @@ class Message(BaseModel):
     role: str = "user"
     bot_id: int | None = None
     chat_id: str | None = None
+    tenant_id: str | None = None
 
 
 @sio.event
@@ -49,6 +52,7 @@ async def send_message(sid, data):
     message = payload.content
     bot_id = payload.bot_id
     chat_id = payload.chat_id
+    tenant_id = payload.tenant_id or DEFAULT_TENANT_ID
 
     await sio.emit("new_message", {"content": message, "role": "user"})
 
@@ -134,6 +138,29 @@ async def send_message(sid, data):
             dispatcher=make_rag_dispatcher(rag_namespace),
             system_prompt=system_prompt,
         )
+    elif not bot_id:
+        with db_context() as db:
+            tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+            agent_config = (
+                db.query(models.AgentConfig).filter(
+                    models.AgentConfig.id == tenant.agent_config_id
+                ).first()
+                if tenant and tenant.agent_config_id else None
+            )
+        namespace = f"agent_{agent_config.id}" if agent_config else None
+        if namespace and has_rag_table(namespace):
+            rag_pipeline = Pipeline([
+                IntentAnalyzerAgent(),
+                RAGInfoAgent(
+                    namespace=namespace,
+                    system_prompt=agent_config.system_prompt,
+                    session_id=chat_id,
+                ),
+            ])
+            ctx = AgentContext(input=message, chat_id=chat_id)
+            reply = await asyncio.to_thread(rag_pipeline.run, ctx)
+        else:
+            reply = await generate_reply(contents, system_prompt)
     else:
         reply = await generate_reply(contents, system_prompt)
 
