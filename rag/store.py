@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
-import psycopg2
+import psycopg
 from markitdown import MarkItDown
-from pgvector.psycopg2 import register_vector
+from pgvector.psycopg import register_vector
 
 from app.config import DATABASE_URL
 from llm import embed as _embed_llm
@@ -39,7 +39,7 @@ def _validate_namespace(namespace: str) -> None:
 
 
 def _connect():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL)
     register_vector(conn)
     return conn
 
@@ -120,7 +120,7 @@ def has_rag_table(namespace: str) -> bool:
 
 def get_namespace(scope_type: str, scope_id: int) -> str | None:
     """Return the registered RAG namespace for a given scope, or None if not found."""
-    with psycopg2.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT namespace FROM rag_sources WHERE scope_type = %s AND scope_id = %s LIMIT 1",
             (scope_type, scope_id),

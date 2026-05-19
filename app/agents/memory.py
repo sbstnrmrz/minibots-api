@@ -1,4 +1,4 @@
-import psycopg2
+import psycopg
 from app.config import DATABASE_URL
 
 _CREATE_TABLE = """
@@ -19,7 +19,7 @@ class MemoryStore:
         self._ensure_table()
 
     def _connect(self):
-        return psycopg2.connect(self._dsn)
+        return psycopg.connect(self._dsn)
 
     def _ensure_table(self) -> None:
         with self._connect() as conn, conn.cursor() as cur:
