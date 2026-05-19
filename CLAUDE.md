@@ -67,6 +67,7 @@ app/
 │   ├── intent_analyzer.py   # TextCleanerStep (fn) + IntentAnalyzerAgent — sets ctx.retrieval_query
 │   ├── rag_info_agent.py    # RAGInfoAgent + RAG_INFO_SYSTEM_PROMPT — grounded customer service agent
 │   ├── generic_info_agent.py# GenericInfoAgent + GENERIC_INFO_SYSTEM_PROMPT — general-purpose Gemini agent with memory, no RAG
+│   ├── business_analyzer_agent.py # FormReader + CompletenessScorer + BusinessAnalyzerAgent — scores chatbot form completeness
 │   └── memory.py            # MemoryStore — Postgres-backed session memory (psycopg2 direct)
 └── tools/
     ├── __init__.py    # TOOL_REGISTRY dict + ALL_TOOLS + dispatch() + get_tools_for_agent() + make_dispatcher_for_agent()
@@ -88,7 +89,7 @@ llm/
 - `Workflow` → ordered `WorkflowAgent` rows → `AgentConfig` rows (agent_type, system_prompt, config_json)
 - `AgentTool` rows assign tool names to each agent
 - `build_pipeline(workflow_id, db)` in `factory.py` loads all of the above and returns a ready `Pipeline`
-- Supported `agent_type` values: `intent_analyzer`, `rag_info`, `generic_info`, `sanitizer`, `truncate`
+- Supported `agent_type` values: `intent_analyzer`, `rag_info`, `generic_info`, `business_analyzer`, `sanitizer`, `truncate`
 - Adding a new agent type: subclass `Agent`, implement `run(ctx: AgentContext) -> AgentContext`, add an entry in `factory.py:_build_agent()`
 
 **AgentContext** — uniform data carrier through the pipeline (`app/agents/base.py`):
@@ -108,6 +109,14 @@ llm/
 - On each call: loads conversation history from `MemoryStore` (keyed by `ctx.chat_id or session_id`), builds prompt, calls `llm.call_llm` with `DEFAULT_LLM_CONFIG`, saves exchange to memory
 - `GENERIC_INFO_SYSTEM_PROMPT` — same 3-step structure as RAGInfoAgent but answers from the model's full knowledge; no grounding restriction
 - Use when no domain-specific knowledge base is needed
+
+**`BusinessAnalyzerAgent`** — chatbot-form readiness scorer (`app/agents/business_analyzer_agent.py`):
+- `BusinessAnalyzerAgent(llm_config=None)` — defaults to `DEFAULT_ANALYZER_CONFIG` (`DEEPSEEK` / `deepseek-v4-pro`, stronger model than other agents)
+- `run(ctx)` accepts an `AgentContext` (Pipeline) or a raw JSON string (direct call); `ctx.input` is a JSON string `{"form_path": "..."}`
+- Flow: parse `form_path` → `FormReader().read()` → `CompletenessScorer().score()` → `call_llm` with the scoring result in the user message → returns a human-readable readiness report
+- On any error returns `{"error": "..."}` as a JSON string — never crashes
+- `FormReader` — pure Python, reads `.json` / `.yaml` / `.yml` / `.toml` (YAML needs `pyyaml`, lazily imported)
+- `CompletenessScorer` — pure Python, scores 5 weighted categories (Business Identity 20%, Products & Services 30%, FAQs 25%, Policies & Detail 15%, Contact & Reach 10%); returns `overall_score`, per-category breakdown, `critical_gaps`, `present_fields`, `empty_fields`, `weak_fields`
 
 **`RAGInfoAgent`** — grounded customer service agent (`app/agents/rag_info_agent.py`):
 - `RAGInfoAgent(namespace, system_prompt=RAG_INFO_SYSTEM_PROMPT, top_k=5, session_id=None, tool_names=[])`
