@@ -5,6 +5,13 @@ Run the application with
 uv run fastapi dev app/main.py
 ```
 
+## Seeds
+
+```bash
+# Create Crazy Imagine tenant (safe to re-run)
+uv run python seed_crazy_imagine.py
+```
+
 ## Local infrastructure
 
 ```bash
