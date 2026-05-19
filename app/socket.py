@@ -50,7 +50,7 @@ async def send_message(sid, data):
     bot_id = payload.bot_id
     chat_id = payload.chat_id
 
-    await sio.emit("new_message", {"content": message, "role": "user"}, to=sid)
+    await sio.emit("new_message", {"content": message, "role": "user"})
 
     bot_type: str | None = None
     system_prompt: str | None = None
@@ -147,4 +147,4 @@ async def send_message(sid, data):
             ))
             db.commit()
 
-    await sio.emit("new_message", {"content": reply, "role": "agent"}, to=sid)
+    await sio.emit("new_message", {"content": reply, "role": "agent"})

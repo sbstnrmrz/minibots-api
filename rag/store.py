@@ -100,6 +100,13 @@ def ingest(
     return len(chunks)
 
 
+def clear_namespace(namespace: str) -> None:
+    """Delete all chunks for a namespace."""
+    _validate_namespace(namespace)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM rag_chunks WHERE namespace = %s", (namespace,))
+
+
 def has_rag_table(namespace: str) -> bool:
     """Return True if any chunks exist for this namespace."""
     _validate_namespace(namespace)

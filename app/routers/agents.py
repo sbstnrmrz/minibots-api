@@ -1,4 +1,5 @@
 import json
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -8,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
-from app.services.storage import get_presigned_url, upload_file
+from app.config import GARAGE_BUCKET
+from app.services.storage import delete_file, get_client, get_presigned_url
+from rag.store import clear_namespace, ingest, init_rag_table
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -131,13 +134,52 @@ async def setup(
         else:
             db.add(models.AgentGeneralInfo(agent_config_id=agent_config.id, **info_data))
 
-    # files
+    # delete existing files for this tenant
+    existing_files = db.query(models.TenantFile).filter(
+        models.TenantFile.tenant_id == tenant_id
+    ).all()
+    for existing in existing_files:
+        ext = Path(existing.filename).suffix if existing.filename else ""
+        delete_file(f"{tenant_id}/agent_docs/{existing.id}{ext}")
+        db.delete(existing)
+
+    # clear and re-ingest RAG namespace
+    namespace = f"agent_{agent_config.id}"
+    init_rag_table(namespace)
+    clear_namespace(namespace)
+
+    # ingest links as text
+    for link in data.links:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".md", mode="w") as tmp:
+            tmp.write(f"# {link.label}\n\n{link.url}\n")
+            tmp_path = tmp.name
+        try:
+            ingest(tmp_path, namespace, source_name=link.label)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    # upload files to Garage and ingest to RAG
     uploaded = []
     for file in files:
         file_id = uuid.uuid4()
         ext = Path(file.filename).suffix if file.filename else ""
         key = f"{tenant_id}/agent_docs/{file_id}{ext}"
-        await upload_file(file, key)
+        contents = await file.read()
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        try:
+            get_client().put_object(
+                Bucket=GARAGE_BUCKET,
+                Key=key,
+                Body=contents,
+                ContentType=file.content_type or "application/octet-stream",
+            )
+            ingest(tmp_path, namespace, source_name=file.filename)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
         url = get_presigned_url(key)
         db.add(models.TenantFile(
             id=file_id,
@@ -145,6 +187,7 @@ async def setup(
             agent_config_id=agent_config.id,
             filename=file.filename,
             content_type=file.content_type or "application/octet-stream",
+            status=models.TenantFileStatus.ingested,
         ))
         uploaded.append({"filename": file.filename, "key": key, "url": url})
 
