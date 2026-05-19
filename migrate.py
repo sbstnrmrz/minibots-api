@@ -30,6 +30,11 @@ with engine.connect() as conn:
     """))
 
     conn.execute(text("""
+        ALTER TABLE agent_configs
+            ADD COLUMN IF NOT EXISTS links JSONB;
+    """))
+
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS workflow_agents (
             id              SERIAL PRIMARY KEY,
             workflow_id     INTEGER NOT NULL REFERENCES workflows(id),
