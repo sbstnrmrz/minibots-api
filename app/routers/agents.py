@@ -68,8 +68,8 @@ async def setup(
 ):
     try:
         raw = json.loads(payload)
-        # normalize frontend camelCase keys
-        if "general" in raw:
+        # normalize frontend camelCase / hyphenated keys to snake_case
+        if isinstance(raw.get("general"), dict):
             g = raw["general"]
             if "sales-pitch" in g:
                 g["sales_pitch"] = g.pop("sales-pitch")
@@ -77,6 +77,10 @@ async def setup(
                 g["additional_info"] = g.pop("additional-info")
             if "socialMedia" in g:
                 g["social_media"] = g.pop("socialMedia")
+        if isinstance(raw.get("contact"), dict):
+            c = raw["contact"]
+            if "companyName" in c:
+                c["company_name"] = c.pop("companyName")
         data = SetupPayload.model_validate(raw)
     except (json.JSONDecodeError, ValidationError) as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -95,6 +99,8 @@ async def setup(
             tenant.contact_name = data.contact.name
         if data.contact.phone:
             tenant.contact_phone = data.contact.phone
+        if data.contact.company_name:
+            tenant.name = data.contact.company_name
 
     # agent_config + links
     links_data = [link.model_dump() for link in data.links]
