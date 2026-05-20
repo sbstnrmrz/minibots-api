@@ -7,6 +7,7 @@ from llm.client import (
     DEFAULT_LLM_CONFIG,
     LLMConfig,
     LLMProvider,
+    acall_llm,
     call_llm,
     embed,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "DEFAULT_LLM_CONFIG",
     "LLMConfig",
     "LLMProvider",
+    "acall_llm",
     "call_llm",
     "embed",
     "to_openai_tool",

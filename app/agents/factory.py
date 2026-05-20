@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.agents.base import Agent, Pipeline
+from app.agents.business_analyzer_agent import BusinessAnalyzerAgent
 from app.agents.examples import SanitizerAgent, TruncateAgent
 from app.agents.generic_info_agent import GenericInfoAgent
 from app.agents.intent_analyzer import IntentAnalyzerAgent
@@ -77,6 +78,9 @@ def _build_agent(
         if combined:
             kwargs["system_prompt"] = combined
         return GenericInfoAgent(**kwargs)
+
+    if agent_type == "business_analyzer":
+        return BusinessAnalyzerAgent()
 
     if agent_type == "sanitizer":
         return SanitizerAgent(tool_names=tool_names)

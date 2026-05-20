@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app import models
+from app.auth import require_api_key
 from app.database import get_db
 from rag.store import init_rag_table, ingest
 
-router = APIRouter(tags=["documents"])
+router = APIRouter(tags=["documents"], dependencies=[Depends(require_api_key)])
 
 
 def _ingest_and_register(

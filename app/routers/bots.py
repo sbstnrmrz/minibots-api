@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import require_api_key
 from app.database import get_db
 from app import models
 from app.schemas.bot import BotCreate, BotResponse
 from app.schemas.chat import ChatMessageResponse
 from app.templates import TEMPLATES
 
-router = APIRouter(prefix="/bots", tags=["bots"])
+router = APIRouter(prefix="/bots", tags=["bots"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("", response_model=BotResponse)

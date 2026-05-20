@@ -1,16 +1,16 @@
 """Chat-completion wrappers.
 
-Thin async adapters over `llm.call_llm`. Kept for backward compatibility:
-`chat.py` and `socket.py` still call `generate_reply` / `generate_with_tools`
-with Gemini-format `contents`. These functions convert that format to
-OpenAI-format `messages` and delegate to the unified LLM client.
+Thin async adapters over `llm.acall_llm`. `chat_handler.py` still calls
+`generate_reply` / `generate_with_tools` with Gemini-format `contents`.
+These functions convert that format to OpenAI-format `messages` and
+await the native-async LLM client — no `asyncio.to_thread` shim, so a
+hung provider no longer ties up a worker thread.
 """
 
-import asyncio
 import dataclasses
 from typing import Any, Callable
 
-from llm import DEFAULT_LLM_CONFIG, call_llm
+from llm import DEFAULT_LLM_CONFIG, acall_llm
 
 _ROLE_MAP = {"user": "user", "model": "assistant", "assistant": "assistant"}
 
@@ -39,7 +39,7 @@ async def generate_reply(
         system_prompt=system_prompt or "",
     )
     messages = _to_openai_messages(contents)
-    return await asyncio.to_thread(call_llm, config, messages)
+    return await acall_llm(config, messages)
 
 
 async def generate_with_tools(
@@ -53,4 +53,4 @@ async def generate_with_tools(
         system_prompt=system_prompt or "",
     )
     messages = _to_openai_messages(contents)
-    return await asyncio.to_thread(call_llm, config, messages, tools, dispatcher)
+    return await acall_llm(config, messages, tools, dispatcher)

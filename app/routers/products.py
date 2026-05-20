@@ -4,11 +4,12 @@ import io
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import require_api_key
 from app.database import get_db
 from app import models
 from app.services.sheets import fetch_sheet
 
-router = APIRouter(tags=["products"])
+router = APIRouter(tags=["products"], dependencies=[Depends(require_api_key)])
 
 
 @router.get("/products", response_model=list[str])

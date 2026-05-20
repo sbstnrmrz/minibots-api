@@ -77,10 +77,18 @@ class LLMConfig:
     max_tokens: int = 1000
     temperature: float = 0.7
     system_prompt: str = ""
+    # Per-call HTTP timeout (seconds). The OpenAI SDK default of 600s is
+    # too long for an interactive chat backend; a hung provider would tie
+    # up a worker thread for ten minutes.
+    timeout: float = 60.0
+    # Hard cap on tool-calling rounds. Stops a model that keeps emitting
+    # tool_calls in a loop from burning unbounded credits.
+    max_tool_rounds: int = 10
 
 
-# Module-level client cache — one openai.OpenAI instance per provider.
+# Module-level client cache — one client of each variant per provider.
 _clients: dict[LLMProvider, openai.OpenAI] = {}
+_async_clients: dict[LLMProvider, openai.AsyncOpenAI] = {}
 
 
 def _get_client(provider: LLMProvider) -> openai.OpenAI:
@@ -93,6 +101,18 @@ def _get_client(provider: LLMProvider) -> openai.OpenAI:
             api_key=api_key,
         )
     return _clients[provider]
+
+
+def _get_async_client(provider: LLMProvider) -> openai.AsyncOpenAI:
+    """Return a cached openai.AsyncOpenAI client for the provider."""
+    if provider not in _async_clients:
+        settings = _PROVIDER_SETTINGS[provider]
+        api_key = os.getenv(settings["api_key_env"], "")
+        _async_clients[provider] = openai.AsyncOpenAI(
+            base_url=settings["base_url"],
+            api_key=api_key,
+        )
+    return _async_clients[provider]
 
 
 def _build_messages(config: LLMConfig, messages: list[dict]) -> list[dict]:
@@ -143,6 +163,15 @@ def call_llm(
     round_n = 0
     while True:
         round_n += 1
+        if round_n > config.max_tool_rounds:
+            logger.error(
+                "   ✗ %s/%s exceeded max_tool_rounds=%d — aborting tool loop",
+                config.provider.value, config.model, config.max_tool_rounds,
+            )
+            raise RuntimeError(
+                f"[{config.provider.value}] LLM tool loop exceeded "
+                f"max_tool_rounds={config.max_tool_rounds}"
+            )
         try:
             res = client.chat.completions.create(
                 model=config.model,
@@ -150,6 +179,7 @@ def call_llm(
                 max_tokens=config.max_tokens,
                 temperature=config.temperature,
                 tools=tools or openai.NOT_GIVEN,
+                timeout=config.timeout,
             )
         except Exception as e:
             logger.error("   ✗ %s/%s call failed: %s", config.provider.value, config.model, e)
@@ -166,6 +196,85 @@ def call_llm(
             return reply
 
         # Append the assistant turn that requested the tool calls.
+        current.append(choice.message.model_dump(exclude_none=True))
+
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+                logger.info("   → tool %s(%s)", tc.function.name, args)
+                result = dispatcher(tc.function.name, args)  # type: ignore[misc]
+                logger.info("   ← tool %s: %s", tc.function.name, _preview(result))
+            except Exception as e:
+                result = {"error": str(e)}
+                logger.warning("   ✗ tool %s failed: %s", tc.function.name, e)
+            current.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result, default=str),
+            })
+
+
+async def acall_llm(
+    config: LLMConfig,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    dispatcher: Callable[[str, dict[str, Any]], Any] | None = None,
+) -> str:
+    """Async variant of `call_llm`.
+
+    Uses `openai.AsyncOpenAI` so the request handler never has to park a
+    thread waiting on the provider. The tool dispatcher remains
+    synchronous — sandbox the tool body or `run_in_executor` from it if
+    a tool itself does blocking I/O.
+    """
+    if tools and dispatcher is None:
+        raise ValueError("`tools` supplied without a `dispatcher` to execute them.")
+
+    client = _get_async_client(config.provider)
+    current = _build_messages(config, messages)
+
+    tool_names = [t["function"]["name"] for t in tools] if tools else []
+    logger.info(
+        "   → %s/%s (async)  msgs=%d  tools=%s",
+        config.provider.value, config.model, len(current),
+        ",".join(tool_names) if tool_names else "none",
+    )
+
+    round_n = 0
+    while True:
+        round_n += 1
+        if round_n > config.max_tool_rounds:
+            logger.error(
+                "   ✗ %s/%s exceeded max_tool_rounds=%d — aborting tool loop",
+                config.provider.value, config.model, config.max_tool_rounds,
+            )
+            raise RuntimeError(
+                f"[{config.provider.value}] LLM tool loop exceeded "
+                f"max_tool_rounds={config.max_tool_rounds}"
+            )
+        try:
+            res = await client.chat.completions.create(
+                model=config.model,
+                messages=current,
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+                tools=tools or openai.NOT_GIVEN,
+                timeout=config.timeout,
+            )
+        except Exception as e:
+            logger.error("   ✗ %s/%s call failed: %s", config.provider.value, config.model, e)
+            raise RuntimeError(
+                f"[{config.provider.value}] LLM call failed: {e}"
+            ) from e
+
+        choice = res.choices[0]
+        tool_calls = choice.message.tool_calls
+
+        if not tool_calls:
+            reply = choice.message.content or ""
+            logger.info("   ← reply (rounds=%d): %s", round_n, _preview(reply))
+            return reply
+
         current.append(choice.message.model_dump(exclude_none=True))
 
         for tc in tool_calls:
@@ -203,7 +312,7 @@ def embed(
     client = _get_client(provider)
     logger.info("   → embed %s/%s  chars=%d", provider.value, model, len(text))
     try:
-        res = client.embeddings.create(model=model, input=text)
+        res = client.embeddings.create(model=model, input=text, timeout=60.0)
     except Exception as e:
         logger.error("   ✗ embed %s/%s failed: %s", provider.value, model, e)
         raise RuntimeError(

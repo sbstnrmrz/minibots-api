@@ -4,15 +4,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
-import psycopg
-from markitdown import MarkItDown
-from pgvector.psycopg import register_vector
 
-from app.config import DATABASE_URL
+from app.db_pool import connection
 from llm import embed as _embed_llm
 from llm.tools import to_openai_tool
 
-_md = MarkItDown()
+# Heavy import — lazy-loaded inside `_read_file` so the module remains
+# cheap to import in lightweight code paths (health checks, tests).
+_md = None
+
+
+def _markitdown():
+    global _md
+    if _md is None:
+        from markitdown import MarkItDown
+        _md = MarkItDown()
+    return _md
 
 _EMBED_MODEL = "gemini-embedding-001"
 _EMBED_DIM = 3072
@@ -39,9 +46,7 @@ def _validate_namespace(namespace: str) -> None:
 
 
 def _connect():
-    conn = psycopg.connect(DATABASE_URL)
-    register_vector(conn)
-    return conn
+    return connection()
 
 
 def _embed(text: str) -> list[float]:
@@ -52,7 +57,7 @@ def _read_file(file_path: str) -> str:
     path = Path(file_path)
     if path.suffix.lower() == ".md":
         return path.read_text(encoding="utf-8")
-    return _md.convert(file_path).text_content
+    return _markitdown().convert(file_path).text_content
 
 
 def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -120,7 +125,7 @@ def has_rag_table(namespace: str) -> bool:
 
 def get_namespace(scope_type: str, scope_id: int) -> str | None:
     """Return the registered RAG namespace for a given scope, or None if not found."""
-    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
+    with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT namespace FROM rag_sources WHERE scope_type = %s AND scope_id = %s LIMIT 1",
             (scope_type, scope_id),
@@ -181,12 +186,15 @@ def retrieve(query: str, namespace: str, top_k: int = 5) -> list[dict]:
             raise ValueError(f"Namespace '{namespace}' has no ingested data.")
 
         query_embedding = np.array(_embed(query))
+        # Cast both sides to halfvec(3072) so the HNSW index defined in
+        # migrate.py is eligible (vector type caps HNSW at 2000 dims).
         cur.execute(
             """
-            SELECT content, metadata, 1 - (embedding <=> %s) AS similarity_score
+            SELECT content, metadata,
+                   1 - (embedding::halfvec(3072) <=> %s::halfvec(3072)) AS similarity_score
             FROM rag_chunks
             WHERE namespace = %s
-            ORDER BY embedding <=> %s
+            ORDER BY embedding::halfvec(3072) <=> %s::halfvec(3072)
             LIMIT %s
             """,
             (query_embedding, namespace, query_embedding, top_k),
