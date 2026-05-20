@@ -8,12 +8,13 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app import models
+from app.auth import require_api_key
 from app.database import get_db
-from app.config import GARAGE_BUCKET
+from app.config import DEFAULT_TENANT_ID, GARAGE_BUCKET
 from app.services.storage import delete_file, get_client, get_presigned_url
 from rag.store import clear_namespace, ingest, init_rag_table
 
-router = APIRouter(prefix="/agents", tags=["agents"])
+router = APIRouter(prefix="/agents", tags=["agents"], dependencies=[Depends(require_api_key)])
 
 
 class Link(BaseModel):
@@ -82,7 +83,7 @@ async def setup(
 
     print(f"[agents/setup] payload={data.model_dump()}, files={[f.filename for f in files]}")
 
-    tenant_id = "fcbb503a-6e49-4e4c-ac58-fc232064513e"  # TODO: read from auth header
+    tenant_id = DEFAULT_TENANT_ID  # TODO: derive from authenticated tenant once per-tenant keys land
 
     tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
     if not tenant:

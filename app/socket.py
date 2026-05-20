@@ -9,13 +9,14 @@ from app.agents.base import AgentContext, Pipeline
 from app.agents.factory import build_pipeline
 from app.agents.intent_analyzer import IntentAnalyzerAgent
 from app.agents.rag_info_agent import RAGInfoAgent
-from app.config import ALLOWED_ORIGINS
+from app.auth import validate_api_token
+from app.config import ALLOWED_ORIGINS, DEFAULT_TENANT_ID as _ENV_DEFAULT_TENANT_ID
 from app.database import db_context
 from app.services.gemini import generate_reply, generate_with_tools
 from app.services.sheets import fetch_sheet
 from rag.store import get_namespace, has_rag_table, make_rag_tool, make_rag_dispatcher
 
-DEFAULT_TENANT_ID = "fcbb503a-6e49-4e4c-ac58-fc232064513e"  # Crazy Imagine
+DEFAULT_TENANT_ID = _ENV_DEFAULT_TENANT_ID
 
 logger = logging.getLogger("uvicorn")
 
@@ -35,6 +36,12 @@ class Message(BaseModel):
 
 @sio.event
 async def connect(sid, environ, auth):
+    token = None
+    if isinstance(auth, dict):
+        token = auth.get("token") or auth.get("api_key")
+    if not validate_api_token(token):
+        logger.warning("socket %s rejected: invalid api token", sid)
+        raise socketio.exceptions.ConnectionRefusedError("unauthorized")
     logger.info(f"Socket client {sid} connected")
 
 

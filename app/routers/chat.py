@@ -7,6 +7,7 @@ from app.agents.base import AgentContext, Pipeline
 from app.agents.factory import build_pipeline
 from app.agents.intent_analyzer import IntentAnalyzerAgent
 from app.agents.rag_info_agent import RAGInfoAgent
+from app.auth import validate_api_token
 from app.database import db_context
 from app.services.sheets import fetch_sheet
 from app.services.gemini import generate_reply, generate_with_tools
@@ -17,6 +18,10 @@ router = APIRouter(tags=["chat"])
 
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket):
+    token = websocket.headers.get("x-api-key") or websocket.query_params.get("token")
+    if not validate_api_token(token):
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     try:
         while True:

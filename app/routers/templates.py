@@ -1,8 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.auth import require_api_key
 from app.templates import TEMPLATES
 
-router = APIRouter(tags=["templates"])
+router = APIRouter(tags=["templates"], dependencies=[Depends(require_api_key)])
 
 
 @router.get("/templates")
