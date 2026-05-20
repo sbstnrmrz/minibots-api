@@ -11,7 +11,7 @@ from app import models
 from app.database import engine
 from app.config import ALLOWED_ORIGINS
 from app.rate_limit import limiter
-from app.routers import bots, chat, templates, products, documents, agents
+from app.routers import bots, templates, products, documents, agents
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +39,6 @@ app.add_middleware(
 )
 
 app.include_router(bots.router)
-app.include_router(chat.router)
 app.include_router(templates.router)
 app.include_router(products.router)
 app.include_router(documents.router)
