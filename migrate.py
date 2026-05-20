@@ -95,5 +95,16 @@ with engine.connect() as conn:
         CREATE INDEX IF NOT EXISTS idx_rag_chunks_namespace ON rag_chunks (namespace);
     """))
 
+    # HNSW ANN index on the embedding column. Without it every retrieve()
+    # does a full namespace scan + 3072-d cosine per chunk. pgvector's
+    # `vector` type caps HNSW at 2000 dimensions, so we index a halfvec
+    # cast — the query in rag/store.py casts both sides the same way to
+    # hit this index. CREATE INDEX IF NOT EXISTS is idempotent.
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding_hnsw
+        ON rag_chunks
+        USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
+    """))
+
     conn.commit()
     print("Migration complete.")
