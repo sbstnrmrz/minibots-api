@@ -3,6 +3,7 @@ import logging
 
 import socketio
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app import models
 from app.agents.base import AgentContext, Pipeline
@@ -88,12 +89,12 @@ async def send_message(sid, data):
                 system_prompt = bot.system_prompt
 
                 if chat_id:
-                    existing_chat = db.query(models.Chat).filter(
-                        models.Chat.id == chat_id
-                    ).first()
-                    if not existing_chat:
-                        db.add(models.Chat(id=chat_id, bot_id=bot_id))
-                        db.commit()
+                    db.execute(
+                        pg_insert(models.Chat.__table__)
+                        .values(id=chat_id, bot_id=bot_id)
+                        .on_conflict_do_nothing(index_elements=["id"])
+                    )
+                    db.commit()
 
                     past = (
                         db.query(models.ChatMessage)
@@ -135,7 +136,7 @@ async def send_message(sid, data):
     contents = history + [{"role": "user", "parts": [{"text": user_content}]}]
 
     if pipeline is not None:
-        ctx = AgentContext(input=message, chat_id=chat_id)
+        ctx = AgentContext(input=user_content, chat_id=chat_id)
         reply = await asyncio.to_thread(pipeline.run, ctx)
     elif bot_type == "rag_info" and rag_namespace:
         legacy_pipeline = Pipeline([
@@ -146,7 +147,7 @@ async def send_message(sid, data):
                 session_id=chat_id or str(bot_id),
             ),
         ])
-        ctx = AgentContext(input=message, chat_id=chat_id)
+        ctx = AgentContext(input=user_content, chat_id=chat_id)
         reply = await asyncio.to_thread(legacy_pipeline.run, ctx)
     elif rag_namespace:
         reply = await generate_with_tools(
@@ -156,21 +157,38 @@ async def send_message(sid, data):
             system_prompt=system_prompt,
         )
     elif not bot_id:
+        # Resolve the tenant's default agent_config and extract every field
+        # we need *inside* the session — accessing an ORM object after the
+        # session closes triggers DetachedInstanceError on lazy loads.
+        agent_config_id: int | None = None
+        agent_config_system_prompt: str | None = None
+        agent_config_links: list | None = None
         with db_context() as db:
             tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
-            agent_config = (
-                db.query(models.AgentConfig).filter(
-                    models.AgentConfig.id == tenant.agent_config_id
-                ).first()
-                if tenant and tenant.agent_config_id else None
-            )
-        namespace = f"agent_{agent_config.id}" if agent_config else None
+            if tenant and tenant.agent_config_id:
+                agent_config = (
+                    db.query(models.AgentConfig)
+                    .filter(models.AgentConfig.id == tenant.agent_config_id)
+                    .first()
+                )
+                if agent_config:
+                    agent_config_id = agent_config.id
+                    agent_config_system_prompt = agent_config.system_prompt
+                    agent_config_links = agent_config.links
+
+        namespace = f"agent_{agent_config_id}" if agent_config_id is not None else None
         if namespace and has_rag_table(namespace):
             from app.agents.factory import _augment_tools_from_links, _links_context
             from app.agents.rag_info_agent import RAG_INFO_SYSTEM_PROMPT
-            tool_names = _augment_tools_from_links(agent_config, [])
-            links_ctx = _links_context(agent_config)
-            base_prompt = agent_config.system_prompt or RAG_INFO_SYSTEM_PROMPT
+            # Build a lightweight shim that satisfies the helpers' attribute
+            # access without requiring an attached SQLAlchemy instance.
+            class _ConfigSnapshot:
+                def __init__(self, links: list | None) -> None:
+                    self.links = links
+            snapshot = _ConfigSnapshot(agent_config_links)
+            tool_names = _augment_tools_from_links(snapshot, [])
+            links_ctx = _links_context(snapshot)
+            base_prompt = agent_config_system_prompt or RAG_INFO_SYSTEM_PROMPT
             rag_pipeline = Pipeline([
                 IntentAnalyzerAgent(),
                 RAGInfoAgent(
@@ -180,7 +198,7 @@ async def send_message(sid, data):
                     tool_names=tool_names,
                 ),
             ])
-            ctx = AgentContext(input=message, chat_id=chat_id)
+            ctx = AgentContext(input=user_content, chat_id=chat_id)
             reply = await asyncio.to_thread(rag_pipeline.run, ctx)
         else:
             reply = await generate_reply(contents, system_prompt)
