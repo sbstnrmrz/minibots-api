@@ -1,35 +1,48 @@
 import logging
+from contextlib import asynccontextmanager
 
-from app.socket import sio, socket_app
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 
 from app import models
+from app.config import ALLOWED_ORIGINS, LOG_JSON
 from app.database import engine
-from app.config import ALLOWED_ORIGINS
+from app.db_pool import get_pool
+from app.observability import RequestIDMiddleware, configure_logging
 from app.rate_limit import limiter
-from app.routers import bots, templates, products, documents, agents
+from app.routers import agents, bots, documents, products, templates
+from app.socket import sio, socket_app
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-5s %(name)-9s │ %(message)s",
-    datefmt="%H:%M:%S",
-)
-# httpx logs every request at INFO — redundant with the llm.client call logs.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-models.Base.metadata.create_all(bind=engine)
+configure_logging(json_logs=LOG_JSON)
+logger = logging.getLogger("startup")
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: create ORM schema on demand. The dedicated psycopg pool
+    # is opened lazily on first use; we touch it here so a cold start
+    # eats the connect cost up front instead of on the first request.
+    models.Base.metadata.create_all(bind=engine)
+    pool = get_pool()
+    logger.info("startup complete", extra={"pool_size": pool.get_stats().get("pool_size")})
+    try:
+        yield
+    finally:
+        logger.info("shutdown: closing pools")
+        pool.close()
+        engine.dispose()
+
+
+app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
-app.mount("/socket.io", socket_app)
 
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -38,13 +51,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/socket.io", socket_app)
+
 app.include_router(bots.router)
 app.include_router(templates.router)
 app.include_router(products.router)
 app.include_router(documents.router)
 app.include_router(agents.router)
 
+
 @app.get("/")
 def root():
     return {"message": "Hello from minibots-api!"}
 
+
+@app.get("/healthz")
+def healthz():
+    """Liveness probe — process is up. No external checks."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness probe — verifies a DB round-trip via the psycopg pool."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready"}
+    except Exception as e:
+        logger.exception("readiness check failed")
+        return {"status": "degraded", "error": str(e)}
