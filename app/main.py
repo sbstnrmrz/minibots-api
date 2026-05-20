@@ -14,7 +14,7 @@ from app.database import engine
 from app.db_pool import get_pool
 from app.observability import RequestIDMiddleware, configure_logging
 from app.rate_limit import limiter
-from app.routers import agents, bots, documents, products, templates
+from app.routers import agents, bots, chats, documents, products, templates
 from app.socket import sio, socket_app
 
 configure_logging(json_logs=LOG_JSON)
@@ -58,6 +58,7 @@ app.include_router(templates.router)
 app.include_router(products.router)
 app.include_router(documents.router)
 app.include_router(agents.router)
+app.include_router(chats.router)
 
 
 @app.get("/")

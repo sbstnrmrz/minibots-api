@@ -326,6 +326,78 @@ async def setup(
     }
 
 
+@router.get("/me")
+def get_me(db: Session = Depends(get_db)):
+    """Return the current tenant's saved setup: contact, agent config,
+    general info, links and uploaded files (with ingestion status)."""
+    tenant_id = DEFAULT_TENANT_ID  # TODO: replace with authenticated tenant
+    tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    agent_config = None
+    general = None
+    links: list = []
+    if tenant.agent_config_id:
+        agent_config = (
+            db.query(models.AgentConfig)
+            .filter(models.AgentConfig.id == tenant.agent_config_id)
+            .first()
+        )
+        if agent_config:
+            links = agent_config.links or []
+            general = (
+                db.query(models.AgentGeneralInfo)
+                .filter(models.AgentGeneralInfo.agent_config_id == agent_config.id)
+                .first()
+            )
+
+    file_rows = (
+        db.query(models.TenantFile)
+        .filter(models.TenantFile.tenant_id == tenant_id)
+        .all()
+    )
+
+    return {
+        "tenant": {
+            "id": str(tenant.id),
+            "name": tenant.name,
+            "contact_name": tenant.contact_name,
+            "contact_phone": tenant.contact_phone,
+        },
+        "agent_config": (
+            {
+                "id": agent_config.id,
+                "name": agent_config.name,
+                "agent_type": agent_config.agent_type,
+                "system_prompt": agent_config.system_prompt,
+            } if agent_config else None
+        ),
+        "general": (
+            {
+                "description": general.description,
+                "services": general.services,
+                "mission": general.mission,
+                "vision": general.vision,
+                "sales_pitch": general.sales_pitch,
+                "faq": general.faq or [],
+                "social_media": general.social_media or {},
+                "additional_info": general.additional_info,
+            } if general else None
+        ),
+        "links": links,
+        "files": [
+            {
+                "file_id": str(row.id),
+                "filename": row.filename,
+                "content_type": row.content_type,
+                "status": row.status.value,
+            }
+            for row in file_rows
+        ],
+    }
+
+
 @router.get("/files/{file_id}")
 def get_file_status(file_id: uuid.UUID, db: Session = Depends(get_db)):
     row = db.query(models.TenantFile).filter(models.TenantFile.id == file_id).first()
