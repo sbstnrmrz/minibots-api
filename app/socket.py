@@ -19,7 +19,10 @@ DEFAULT_TENANT_ID = "fcbb503a-6e49-4e4c-ac58-fc232064513e"  # Crazy Imagine
 
 logger = logging.getLogger("uvicorn")
 
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=[])
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins=ALLOWED_ORIGINS,
+)
 socket_app = socketio.ASGIApp(sio)
 
 
@@ -28,7 +31,6 @@ class Message(BaseModel):
     role: str = "user"
     bot_id: int | None = None
     chat_id: str | None = None
-    tenant_id: str | None = None
 
 
 @sio.event
@@ -45,16 +47,15 @@ async def disconnect(sid, reason):
 async def send_message(sid, data):
     try:
         payload = Message(**data)
-    except ValidationError as e:
-        await sio.emit("error", {"detail": str(e)}, to=sid)
+    except ValidationError:
+        await sio.emit("error", {"detail": "invalid payload"}, to=sid)
         return
 
     message = payload.content
     bot_id = payload.bot_id
     chat_id = payload.chat_id
-    tenant_id = payload.tenant_id or DEFAULT_TENANT_ID
-
-    await sio.emit("new_message", {"content": message, "role": "user"})
+    # TODO: derive tenant_id from authenticated socket session
+    tenant_id = DEFAULT_TENANT_ID
 
     bot_type: str | None = None
     system_prompt: str | None = None
@@ -180,4 +181,4 @@ async def send_message(sid, data):
             ))
             db.commit()
 
-    await sio.emit("new_message", {"content": reply, "role": "agent"})
+    await sio.emit("new_message", {"content": reply, "role": "agent"}, to=sid)

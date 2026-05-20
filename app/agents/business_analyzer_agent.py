@@ -383,12 +383,20 @@ class BusinessAnalyzerAgent(Agent):
     def _resolve_form(payload: dict) -> dict:
         """Resolve the form dict from the parsed JSON input. Accepted shapes:
 
-        - {"form_path": "/path/to/form.json"}  → read the file from disk
         - {"form_data": {...}}                 → use the inline form dict
         - {"general": {...}, "contact": {...}} → the payload IS the form
+
+        The previous `{"form_path": "..."}` shape was removed: it accepted an
+        arbitrary filesystem path from caller-controlled JSON, which is an
+        arbitrary-file-read sink when this agent runs inside a chat pipeline.
+        Use `FormReader` directly from a trusted server-side caller if a file
+        must be loaded.
         """
         if "form_path" in payload:
-            return FormReader().read(payload["form_path"])
+            raise ValueError(
+                "form_path input is not accepted; pass the form inline as "
+                "'form_data' or as the raw form payload."
+            )
         if "form_data" in payload:
             return payload["form_data"]
         return payload
