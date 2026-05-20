@@ -5,7 +5,6 @@ from pydantic import BaseModel, ValidationError
 
 from app.auth import validate_api_token
 from app.config import (
-    ALLOWED_ORIGINS,
     CHAT_COALESCE_WINDOW_SECONDS,
     DEFAULT_TENANT_ID as _ENV_DEFAULT_TENANT_ID,
 )
@@ -19,7 +18,7 @@ logger = logging.getLogger("uvicorn")
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=ALLOWED_ORIGINS,
+    cors_allowed_origins=[],  # FastAPI CORSMiddleware handles CORS for the mount
 )
 socket_app = socketio.ASGIApp(sio)
 
