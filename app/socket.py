@@ -12,6 +12,7 @@ from app.agents.rag_info_agent import RAGInfoAgent
 from app.auth import validate_api_token
 from app.config import ALLOWED_ORIGINS, DEFAULT_TENANT_ID as _ENV_DEFAULT_TENANT_ID
 from app.database import db_context
+from app.rate_limit import socket_limiter
 from app.services.gemini import generate_reply, generate_with_tools
 from app.services.sheets import fetch_sheet
 from rag.store import get_namespace, has_rag_table, make_rag_tool, make_rag_dispatcher
@@ -47,11 +48,19 @@ async def connect(sid, environ, auth):
 
 @sio.event
 async def disconnect(sid, reason):
+    socket_limiter.forget(sid)
     logger.info(f"Socket client {sid} disconnected")
 
 
 @sio.event
 async def send_message(sid, data):
+    if not socket_limiter.allow(sid):
+        await sio.emit(
+            "error",
+            {"detail": "rate limit exceeded; slow down"},
+            to=sid,
+        )
+        return
     try:
         payload = Message(**data)
     except ValidationError:

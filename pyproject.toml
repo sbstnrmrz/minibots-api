@@ -17,6 +17,7 @@ dependencies = [
     "pypdf>=6.11.0",
     "python-dotenv>=1.2.2",
     "python-socketio>=5.16.1",
+    "slowapi>=0.1.9",
     "sqlalchemy>=2.0.49",
 ]
 

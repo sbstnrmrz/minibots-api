@@ -77,6 +77,13 @@ class LLMConfig:
     max_tokens: int = 1000
     temperature: float = 0.7
     system_prompt: str = ""
+    # Per-call HTTP timeout (seconds). The OpenAI SDK default of 600s is
+    # too long for an interactive chat backend; a hung provider would tie
+    # up a worker thread for ten minutes.
+    timeout: float = 60.0
+    # Hard cap on tool-calling rounds. Stops a model that keeps emitting
+    # tool_calls in a loop from burning unbounded credits.
+    max_tool_rounds: int = 10
 
 
 # Module-level client cache — one openai.OpenAI instance per provider.
@@ -143,6 +150,15 @@ def call_llm(
     round_n = 0
     while True:
         round_n += 1
+        if round_n > config.max_tool_rounds:
+            logger.error(
+                "   ✗ %s/%s exceeded max_tool_rounds=%d — aborting tool loop",
+                config.provider.value, config.model, config.max_tool_rounds,
+            )
+            raise RuntimeError(
+                f"[{config.provider.value}] LLM tool loop exceeded "
+                f"max_tool_rounds={config.max_tool_rounds}"
+            )
         try:
             res = client.chat.completions.create(
                 model=config.model,
@@ -150,6 +166,7 @@ def call_llm(
                 max_tokens=config.max_tokens,
                 temperature=config.temperature,
                 tools=tools or openai.NOT_GIVEN,
+                timeout=config.timeout,
             )
         except Exception as e:
             logger.error("   ✗ %s/%s call failed: %s", config.provider.value, config.model, e)
@@ -203,7 +220,7 @@ def embed(
     client = _get_client(provider)
     logger.info("   → embed %s/%s  chars=%d", provider.value, model, len(text))
     try:
-        res = client.embeddings.create(model=model, input=text)
+        res = client.embeddings.create(model=model, input=text, timeout=60.0)
     except Exception as e:
         logger.error("   ✗ embed %s/%s failed: %s", provider.value, model, e)
         raise RuntimeError(
