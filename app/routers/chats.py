@@ -21,6 +21,37 @@ router = APIRouter(prefix="/chats", tags=["chats"], dependencies=[Depends(requir
 _ROLE_OUT = {"user": "user", "model": "agent", "agent": "agent"}
 
 
+@router.get("")
+def list_chats(db: Session = Depends(get_db)):
+    """Return all chat sessions ordered by most-recent first, with basic stats."""
+    chats = (
+        db.query(models.Chat)
+        .order_by(models.Chat.created_at.desc())
+        .all()
+    )
+    result = []
+    for chat in chats:
+        msg_count = (
+            db.query(models.ChatMessage)
+            .filter(models.ChatMessage.chat_id == chat.id)
+            .count()
+        )
+        last_msg = (
+            db.query(models.ChatMessage)
+            .filter(models.ChatMessage.chat_id == chat.id)
+            .order_by(models.ChatMessage.created_at.desc())
+            .first()
+        )
+        result.append({
+            "chat_id": chat.id,
+            "bot_id": chat.bot_id,
+            "created_at": chat.created_at.isoformat() if chat.created_at else None,
+            "message_count": msg_count,
+            "last_message": last_msg.content[:100] if last_msg else None,
+        })
+    return result
+
+
 @router.get("/{chat_id}/messages")
 def get_chat_messages(chat_id: str, db: Session = Depends(get_db)):
     """Return all persisted messages for a chat in chronological order."""
