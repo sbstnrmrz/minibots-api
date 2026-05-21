@@ -13,19 +13,21 @@ from app import models
 from app.auth import require_api_key
 from app.database import get_db
 
-router = APIRouter(prefix="/chats", tags=["chats"], dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/chats", tags=["chats"])
 
-
-# Map persisted ChatMessage.role ("user" / "model") to the role names
-# the socket emits and the frontend expects ("user" / "agent").
 _ROLE_OUT = {"user": "user", "model": "agent", "agent": "agent"}
 
 
 @router.get("")
-def list_chats(db: Session = Depends(get_db)):
-    """Return all chat sessions ordered by most-recent first, with basic stats."""
+def list_chats(
+    current_tenant: models.Tenant = Depends(require_api_key),
+    db: Session = Depends(get_db),
+):
+    """Return chat sessions for the current tenant, most-recent first."""
     chats = (
         db.query(models.Chat)
+        .join(models.Bot, models.Chat.bot_id == models.Bot.id)
+        .filter(models.Bot.tenant_id == current_tenant.id)
         .order_by(models.Chat.created_at.desc())
         .all()
     )
@@ -53,12 +55,19 @@ def list_chats(db: Session = Depends(get_db)):
 
 
 @router.get("/{chat_id}/messages")
-def get_chat_messages(chat_id: str, db: Session = Depends(get_db)):
+def get_chat_messages(
+    chat_id: str,
+    current_tenant: models.Tenant = Depends(require_api_key),
+    db: Session = Depends(get_db),
+):
     """Return all persisted messages for a chat in chronological order."""
-    chat = db.query(models.Chat).filter(models.Chat.id == chat_id).first()
+    chat = (
+        db.query(models.Chat)
+        .join(models.Bot, models.Chat.bot_id == models.Bot.id)
+        .filter(models.Chat.id == chat_id, models.Bot.tenant_id == current_tenant.id)
+        .first()
+    )
     if not chat:
-        # No row yet — empty conversation, not a 404. The frontend can
-        # mount on a fresh chat_id and call this immediately.
         return {"chat_id": chat_id, "messages": []}
 
     rows = (

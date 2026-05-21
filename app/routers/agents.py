@@ -21,7 +21,6 @@ from app.auth import require_api_key
 from app.database import SessionLocal, get_db
 from app.config import (
     ALLOWED_UPLOAD_SUFFIXES,
-    DEFAULT_TENANT_ID,
     GARAGE_BUCKET,
     MAX_UPLOAD_FILE_BYTES,
     MAX_UPLOAD_FILE_COUNT,
@@ -31,7 +30,7 @@ from rag.store import clear_namespace, ingest, init_rag_table
 
 logger = logging.getLogger("agents")
 
-router = APIRouter(prefix="/agents", tags=["agents"], dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 async def _stream_to_tempfile(file: UploadFile, suffix: str) -> tuple[str, int]:
@@ -159,6 +158,7 @@ async def setup(
     background_tasks: BackgroundTasks,
     payload: str = Form(...),
     files: list[UploadFile] = File(default=[]),
+    current_tenant: models.Tenant = Depends(require_api_key),
     db: Session = Depends(get_db),
 ):
     if len(files) > MAX_UPLOAD_FILE_COUNT:
@@ -198,11 +198,7 @@ async def setup(
     logger.info("agents/setup files=%s", [f.filename for f in files])
     logger.debug("agents/setup payload=%s", data.model_dump())
 
-    tenant_id = DEFAULT_TENANT_ID  # TODO: derive from authenticated tenant once per-tenant keys land
-
-    tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found.")
+    tenant = current_tenant
 
     # contact
     if data.contact:
@@ -331,13 +327,13 @@ async def setup(
 
 
 @router.get("/me")
-def get_me(db: Session = Depends(get_db)):
+def get_me(
+    current_tenant: models.Tenant = Depends(require_api_key),
+    db: Session = Depends(get_db),
+):
     """Return the current tenant's saved setup: contact, agent config,
     general info, links and uploaded files (with ingestion status)."""
-    tenant_id = DEFAULT_TENANT_ID  # TODO: replace with authenticated tenant
-    tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    tenant = current_tenant
 
     agent_config = None
     general = None
@@ -358,7 +354,7 @@ def get_me(db: Session = Depends(get_db)):
 
     file_rows = (
         db.query(models.TenantFile)
-        .filter(models.TenantFile.tenant_id == tenant_id)
+        .filter(models.TenantFile.tenant_id == tenant.id)
         .all()
     )
 
@@ -403,8 +399,19 @@ def get_me(db: Session = Depends(get_db)):
 
 
 @router.get("/files/{file_id}")
-def get_file_status(file_id: uuid.UUID, db: Session = Depends(get_db)):
-    row = db.query(models.TenantFile).filter(models.TenantFile.id == file_id).first()
+def get_file_status(
+    file_id: uuid.UUID,
+    current_tenant: models.Tenant = Depends(require_api_key),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(models.TenantFile)
+        .filter(
+            models.TenantFile.id == file_id,
+            models.TenantFile.tenant_id == current_tenant.id,
+        )
+        .first()
+    )
     if not row:
         raise HTTPException(status_code=404, detail="file not found")
     presigned: str | None = None

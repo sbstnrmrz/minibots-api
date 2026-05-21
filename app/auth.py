@@ -1,64 +1,102 @@
-"""Single-token API auth.
+"""Per-tenant API auth.
 
-Stop-gap until per-tenant credentials land. Every protected route depends
-on `require_api_key`; the socket.io `connect` handler calls
-`validate_api_token` against the `auth` arg sent by the client.
+Each tenant has a unique `api_token` stored in the DB. `require_api_key`
+resolves the token to a Tenant object and returns it so any route can
+scope queries to `current_tenant.id` without a second DB round-trip.
 
-Token is read from one of, in priority order:
+Token is read from, in priority order:
   1. `X-API-Key` header
   2. `Authorization: Bearer <token>` header
 
-A missing `API_TOKEN` env var fails closed in production and open in
-development to avoid blocking local work.
+Dev fallback: if `ENVIRONMENT == "development"` and no token is sent,
+the dependency resolves to the `DEFAULT_TENANT_ID` tenant so local work
+is never blocked by missing credentials.
 """
 
 import hmac
 import logging
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
 
-from app.config import API_TOKEN, ENVIRONMENT
+from app.config import API_TOKEN, DEFAULT_TENANT_ID, ENVIRONMENT
+from app.database import get_db
 
 logger = logging.getLogger("auth")
 
 
-def _token_configured() -> bool:
-    return bool(API_TOKEN)
+def _extract_token(
+    x_api_key: str | None,
+    authorization: str | None,
+) -> str | None:
+    if x_api_key:
+        return x_api_key
+    if authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            return value.strip() or None
+    return None
 
 
-def _constant_time_eq(a: str, b: str) -> bool:
-    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+def get_tenant_by_token(token: str | None, db: Session):
+    """Return the Tenant whose api_token matches, or None."""
+    if not token:
+        return None
+    from app import models
+    return db.query(models.Tenant).filter(models.Tenant.api_token == token).first()
 
 
 def validate_api_token(token: str | None) -> bool:
-    """Return True if `token` matches the configured API_TOKEN.
+    """Socket-compatible check against the env API_TOKEN (legacy path).
 
-    In development with no API_TOKEN configured, return True so the dev
-    server stays usable. In any other case a missing token is rejected.
+    Used by socket.io connect before the DB session is available.
+    Per-tenant socket auth is handled separately via get_tenant_by_token.
     """
-    if not _token_configured():
-        if ENVIRONMENT == "development":
-            return True
-        return False
+    if not API_TOKEN:
+        return ENVIRONMENT == "development"
     if not token:
         return False
-    return _constant_time_eq(token, API_TOKEN)
+    return hmac.compare_digest(token.encode("utf-8"), API_TOKEN.encode("utf-8"))
 
 
 def require_api_key(
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     authorization: str | None = Header(default=None),
-) -> None:
-    """FastAPI dependency. Raises 401 unless the request carries a valid token."""
-    token = x_api_key
-    if not token and authorization:
-        scheme, _, value = authorization.partition(" ")
-        if scheme.lower() == "bearer":
-            token = value.strip() or None
-    if not validate_api_token(token):
-        logger.warning("rejected request: invalid or missing API token")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or missing API token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    db: Session = Depends(get_db),
+):
+    """FastAPI dependency. Resolves the request token to a Tenant.
+
+    Raises 401 if no valid token is found. Returns the Tenant object so
+    routes can filter by `current_tenant.id` directly.
+    """
+    from app import models
+
+    token = _extract_token(x_api_key, authorization)
+    tenant = get_tenant_by_token(token, db)
+    if tenant:
+        return tenant
+
+    # Dev fallback: env API_TOKEN match → resolve DEFAULT_TENANT_ID
+    if token and API_TOKEN and hmac.compare_digest(
+        token.encode("utf-8"), API_TOKEN.encode("utf-8")
+    ):
+        tenant = db.query(models.Tenant).filter(
+            models.Tenant.id == DEFAULT_TENANT_ID
+        ).first()
+        if tenant:
+            return tenant
+
+    # Development with no token configured at all
+    if not API_TOKEN and ENVIRONMENT == "development":
+        tenant = db.query(models.Tenant).filter(
+            models.Tenant.id == DEFAULT_TENANT_ID
+        ).first()
+        if tenant:
+            return tenant
+
+    logger.warning("rejected request: no tenant matched the provided token")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="invalid or missing API token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )

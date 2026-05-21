@@ -9,7 +9,7 @@ from app.auth import require_api_key
 from app.database import get_db
 from rag.store import init_rag_table, ingest
 
-router = APIRouter(tags=["documents"], dependencies=[Depends(require_api_key)])
+router = APIRouter(tags=["documents"])
 
 
 def _ingest_and_register(
@@ -37,9 +37,14 @@ def _ingest_and_register(
 async def upload_bot_document(
     bot_id: int,
     file: UploadFile,
+    current_tenant: models.Tenant = Depends(require_api_key),
     db: Session = Depends(get_db),
 ):
-    bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
+    bot = (
+        db.query(models.Bot)
+        .filter(models.Bot.id == bot_id, models.Bot.tenant_id == current_tenant.id)
+        .first()
+    )
     if not bot:
         raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found.")
 
@@ -66,9 +71,17 @@ async def upload_bot_document(
 async def upload_workflow_document(
     workflow_id: int,
     file: UploadFile,
+    current_tenant: models.Tenant = Depends(require_api_key),
     db: Session = Depends(get_db),
 ):
-    workflow = db.query(models.Workflow).filter(models.Workflow.id == workflow_id).first()
+    workflow = (
+        db.query(models.Workflow)
+        .filter(
+            models.Workflow.id == workflow_id,
+            models.Workflow.tenant_id == current_tenant.id,
+        )
+        .first()
+    )
     if not workflow:
         raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found.")
 
@@ -95,6 +108,7 @@ async def upload_workflow_document(
 async def upload_agent_document(
     agent_config_id: int,
     file: UploadFile,
+    current_tenant: models.Tenant = Depends(require_api_key),
     db: Session = Depends(get_db),
 ):
     agent_config = db.query(models.AgentConfig).filter(

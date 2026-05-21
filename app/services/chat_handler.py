@@ -52,7 +52,6 @@ async def handle_chat_turn(
     both messages, and returns the reply text.
     """
     bot_type: str | None = None
-    system_prompt: str | None = None
     history: list[dict] = []
     user_content = message
     rag_namespace: str | None = None
@@ -63,7 +62,6 @@ async def handle_chat_turn(
             bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
             if bot:
                 bot_type = bot.bot_type
-                system_prompt = bot.system_prompt
                 spreadsheet_id = bot.spreadsheet_id
                 workflow_id = bot.workflow_id
 
@@ -122,7 +120,6 @@ async def handle_chat_turn(
             IntentAnalyzerAgent(),
             RAGInfoAgent(
                 namespace=rag_namespace,
-                system_prompt=system_prompt,
                 session_id=chat_id or str(bot_id),
             ),
         ])
@@ -133,7 +130,6 @@ async def handle_chat_turn(
             contents=contents,
             tools=[make_rag_tool(rag_namespace)],
             dispatcher=make_rag_dispatcher(rag_namespace),
-            system_prompt=system_prompt,
         )
     elif not bot_id:
         reply = await _handle_tenant_default(
@@ -142,10 +138,9 @@ async def handle_chat_turn(
             user_content=user_content,
             chat_id=chat_id,
             contents=contents,
-            system_prompt=system_prompt,
         )
     else:
-        reply = await generate_reply(contents, system_prompt)
+        reply = await generate_reply(contents)
 
     if bot_id:
         with db_context() as db:
@@ -166,7 +161,6 @@ async def _handle_tenant_default(
     user_content: str,
     chat_id: str | None,
     contents: list[dict],
-    system_prompt: str | None,
 ) -> str:
     """No-bot fallback: route to the tenant's default AgentConfig if any."""
     agent_config_id: int | None = None
@@ -191,7 +185,7 @@ async def _handle_tenant_default(
 
     namespace = f"agent_{agent_config_id}" if agent_config_id is not None else None
     if not (namespace and has_rag_table(namespace)):
-        return await generate_reply(contents, system_prompt)
+        return await generate_reply(contents)
 
     from app.agents.factory import _augment_tools_from_links, _links_context
     from app.agents.rag_info_agent import RAG_INFO_SYSTEM_PROMPT

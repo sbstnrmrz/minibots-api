@@ -130,7 +130,20 @@ with engine.connect() as conn:
 
     conn.execute(text("""
         ALTER TABLE tenants
-            ADD COLUMN IF NOT EXISTS gcal_calendar_id VARCHAR;
+            ADD COLUMN IF NOT EXISTS gcal_calendar_id VARCHAR,
+            ADD COLUMN IF NOT EXISTS api_token VARCHAR UNIQUE;
+    """))
+
+    conn.execute(text("""
+        ALTER TABLE workflows
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+    """))
+
+    conn.execute(text("""
+        ALTER TABLE bots
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id),
+            DROP COLUMN IF EXISTS system_prompt,
+            DROP COLUMN IF EXISTS documents_urls;
     """))
 
     conn.commit()

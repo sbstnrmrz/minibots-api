@@ -3,22 +3,21 @@ import logging
 import socketio
 from pydantic import BaseModel, ValidationError
 
-from app.auth import validate_api_token
+from app.auth import get_tenant_by_token, validate_api_token
 from app.config import (
     CHAT_COALESCE_WINDOW_SECONDS,
-    DEFAULT_TENANT_ID as _ENV_DEFAULT_TENANT_ID,
+    DEFAULT_TENANT_ID,
+    ENVIRONMENT,
 )
 from app.rate_limit import socket_limiter
 from app.services.chat_handler import handle_chat_turn
 from app.services.message_queue import MessageCoalescer
 
-DEFAULT_TENANT_ID = _ENV_DEFAULT_TENANT_ID
-
 logger = logging.getLogger("uvicorn")
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=[],  # FastAPI CORSMiddleware handles CORS for the mount
+    cors_allowed_origins=[],
 )
 socket_app = socketio.ASGIApp(sio)
 
@@ -36,14 +35,15 @@ async def _run_turn(
     bot_id: int | None,
     combined_content: str,
 ) -> None:
-    """Buffer-flush callback: run one chat turn and emit the reply."""
+    session = await sio.get_session(sid)
+    tenant_id = session.get("tenant_id", DEFAULT_TENANT_ID)
+
     try:
         reply = await handle_chat_turn(
             message=combined_content,
             bot_id=bot_id,
             chat_id=chat_id,
-            # TODO: derive tenant_id from authenticated socket session
-            tenant_id=DEFAULT_TENANT_ID,
+            tenant_id=tenant_id,
         )
     except Exception as e:
         logger.exception("chat turn failed for sid=%s: %s", sid, e)
@@ -67,17 +67,33 @@ async def connect(sid, environ, auth):
     token = None
     if isinstance(auth, dict):
         token = auth.get("token") or auth.get("api_key")
-    if not validate_api_token(token):
-        logger.warning("socket %s rejected: invalid api token", sid)
+
+    # Resolve tenant_id from per-tenant DB token
+    tenant_id: str | None = None
+    if token:
+        from app.database import db_context
+        with db_context() as db:
+            tenant = get_tenant_by_token(token, db)
+            if tenant:
+                tenant_id = str(tenant.id)
+
+    # Dev fallback: env-level token → DEFAULT_TENANT_ID
+    if not tenant_id and validate_api_token(token):
+        tenant_id = DEFAULT_TENANT_ID
+
+    if not tenant_id:
+        logger.warning("socket %s rejected: no tenant matched token", sid)
         raise socketio.exceptions.ConnectionRefusedError("unauthorized")
-    logger.info(f"Socket client {sid} connected")
+
+    await sio.save_session(sid, {"tenant_id": tenant_id})
+    logger.info("socket %s connected tenant_id=%s", sid, tenant_id)
 
 
 @sio.event
 async def disconnect(sid, reason):
     coalescer.forget(sid)
     socket_limiter.forget(sid)
-    logger.info(f"Socket client {sid} disconnected")
+    logger.info("socket %s disconnected", sid)
 
 
 @sio.event

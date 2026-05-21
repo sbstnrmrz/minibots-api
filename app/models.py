@@ -24,6 +24,7 @@ class Tenant(Base):
     contact_name = Column(String, nullable=True)
     contact_phone = Column(String, nullable=True)
     gcal_calendar_id = Column(String, nullable=True)
+    api_token = Column(String, nullable=True, unique=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -65,6 +66,7 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -112,18 +114,17 @@ class Bot(Base):
     __tablename__ = "bots"
 
     id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     name = Column(String, nullable=False)
-    bot_type = Column(String, nullable=False, server_default="zen_coach")
-    system_prompt = Column(String, nullable=True)
+    bot_type = Column(String, nullable=False, server_default="rag_info")
     spreadsheet_id = Column(String, nullable=True)
-    documents_urls = Column(ARRAY(String), nullable=True)
     workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=True)
 
 
 class Chat(Base):
     __tablename__ = "chats"
 
-    id = Column(String, primary_key=True)  # client-supplied UUID
+    id = Column(String, primary_key=True)
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
