@@ -13,15 +13,15 @@ import sys
 import time
 import uuid
 
-import questionary
 from dotenv import load_dotenv
 from prompt_toolkit import prompt as pt_prompt
-from prompt_toolkit.formatted_text import FormattedText, HTML
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
 from cli.client import APIClient, APIError, SocketClient
 from cli.completer import SlashCompleter
+from cli.menu import MenuItem, run_menu
 from cli import ui
 
 load_dotenv()
@@ -42,44 +42,47 @@ _PT_STYLE = Style.from_dict({
 })
 
 _COMPLETER = SlashCompleter()
-_TOOLBAR = FormattedText([("#444444", "─" * 300)])
 
 _KB = KeyBindings()
 
-@_KB.add('c-c')
+
+@_KB.add("c-c")
 def _kb_ctrl_c(event):
     buf = event.app.current_buffer
     if buf.text:
-        buf.text = ''
+        buf.text = ""
         buf.cursor_position = 0
     else:
         event.app.exit(exception=KeyboardInterrupt)
 
-@_KB.add('escape', 'escape', eager=True)
+
+@_KB.add("escape", "escape", eager=True)
 def _kb_double_esc(event):
     buf = event.app.current_buffer
-    buf.text = ''
+    buf.text = ""
     buf.cursor_position = 0
 
 
 def _read_input() -> str:
-    ui.console.rule(style="dim")  # separator line above prompt
-    return pt_prompt(
-        HTML("<ansibrightblack>&gt; </ansibrightblack>"),
+    ui.print_dim_rule()                   # top sandwich line
+    text = pt_prompt(
+        FormattedText([("#666666", "❯ ")]),
         completer=_COMPLETER,
         complete_while_typing=True,
         style=_PT_STYLE,
-        reserve_space_for_menu=4,
+        reserve_space_for_menu=6,
         key_bindings=_KB,
-        bottom_toolbar=_TOOLBAR,
+        # no bottom_toolbar — it pins to screen-bottom, not below cursor
     ).strip()
+    ui.print_dim_rule()                   # bottom sandwich line, right below echo
+    return text
 
 
 # ---------------------------------------------------------------------------
 # Menu helpers
 # ---------------------------------------------------------------------------
 
-def _menu_select_bot(api: APIClient) -> dict:
+def _menu_select_bot(api: APIClient) -> dict | None:
     try:
         bots = api.list_bots()
     except APIError as e:
@@ -89,18 +92,15 @@ def _menu_select_bot(api: APIClient) -> dict:
         ui.print_error("No bots found. Seed one via setup_test.py or POST /bots.")
         raise SystemExit(1)
 
-    ui.print_bots_table(bots)
-    choices = [
-        questionary.Choice(
-            title=f"{b['name']}  [{b.get('bot_type', '?')}]  id={b['id']}",
+    items = [
+        MenuItem(
+            label=f"{b['name']}  [{b.get('bot_type', '?')}]  id={b['id']}",
             value=b,
+            category="Bots",
         )
         for b in bots
     ]
-    bot = questionary.select("Select a bot:", choices=choices).ask()
-    if bot is None:
-        raise KeyboardInterrupt
-    return bot
+    return run_menu("Select a Bot", items)
 
 
 def _menu_select_chat(api: APIClient) -> dict | None:
@@ -114,19 +114,19 @@ def _menu_select_chat(api: APIClient) -> dict | None:
         ui.print_info("No existing sessions found.")
         return None
 
-    ui.print_chats_table(chats)
-
     def _label(c: dict) -> str:
-        snippet = (c.get("last_message") or "")[:42]
         return (
-            f"bot={c['bot_id']}  "
             f"{c['chat_id'][:18]}…  "
-            f"({c.get('message_count', 0)} msgs)  \"{snippet}\""
+            f"bot={c['bot_id']}  "
+            f"({c.get('message_count', 0)} msgs)"
         )
 
-    choices = [questionary.Choice(title=_label(c), value=c) for c in chats]
-    choices.append(questionary.Choice(title="← Back", value=None))
-    return questionary.select("Select a session to resume:", choices=choices).ask()
+    items = [
+        MenuItem(label=_label(c), value=c, category="Sessions")
+        for c in chats
+    ]
+    items.append(MenuItem("← Back", value=None))
+    return run_menu("Resume Session", items)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +141,7 @@ def _run_chat(
     history: list[dict],
 ) -> str:
     """Interactive chat loop. Returns 'quit' | 'resume' | 'new'."""
+    ui.clear_screen()
     ui.print_session_header(bot["name"], chat_id)
 
     if history:
@@ -155,12 +156,11 @@ def _run_chat(
             return "quit"
 
         if not user_input:
-            # Clear empty prompt echo + blank line above it (2 lines)
-            sys.stdout.write("\033[A\033[2K\033[A\033[2K\r")
+            # Erase: bottom rule + echo + top rule (3 lines up from cursor)
+            sys.stdout.write("\033[A\033[2K\033[A\033[2K\033[A\033[2K\r")
             sys.stdout.flush()
             continue
 
-        # Reprint the input line as a styled gray bar (replaces prompt_toolkit echo)
         ui.print_user_message(user_input, replace_line=True)
 
         cmd = user_input.lower()
@@ -184,11 +184,15 @@ def _run_chat(
             ui.print_session_header(bot["name"], chat_id)
             continue
 
-        if cmd == "/bots":
+        if cmd == "/bots" or cmd == "/agents":
             try:
                 ui.print_bots_table(api.list_bots())
             except APIError as e:
                 ui.print_error(e.detail)
+            continue
+
+        if cmd == "/compact":
+            ui.print_info("Compact: no server-side compaction endpoint yet.")
             continue
 
         if cmd == "/history":
@@ -233,6 +237,8 @@ def _run_chat(
 
 def main() -> None:
     load_dotenv()
+    ui.suppress_logs()  # reroute library noise before any connection attempt
+
     base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
     token    = os.getenv("API_TOKEN", "")
 
@@ -264,15 +270,11 @@ def main() -> None:
         while True:
             # ── main menu ──────────────────────────────────────────────────
             if action == "menu":
-                choice = questionary.select(
-                    "What would you like to do?",
-                    choices=[
-                        questionary.Choice("💬  New Chat",       value="new"),
-                        questionary.Choice("🔁  Resume Session", value="resume"),
-                        questionary.Choice("🚪  Quit",           value="quit"),
-                    ],
-                    use_shortcuts=True,
-                ).ask()
+                choice = run_menu("minibots", [
+                    MenuItem("New Chat",        value="new"),
+                    MenuItem("Resume Session",  value="resume"),
+                    MenuItem("Quit",            value="quit"),
+                ])
                 if choice is None or choice == "quit":
                     break
                 action = choice
@@ -282,6 +284,9 @@ def main() -> None:
                 try:
                     bot = _menu_select_bot(api)
                 except (KeyboardInterrupt, SystemExit):
+                    action = "menu"
+                    continue
+                if bot is None:
                     action = "menu"
                     continue
                 action = _run_chat(api, sio, bot, str(uuid.uuid4()), [])

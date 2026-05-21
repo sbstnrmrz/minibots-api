@@ -13,6 +13,8 @@ COMMANDS: list[dict] = [
     {"name": "new",     "description": "Start a new chat with a different bot"},
     {"name": "history", "description": "Reload and display current conversation"},
     {"name": "bots",    "description": "List all available bots"},
+    {"name": "agents",  "description": "List all bots and agents"},
+    {"name": "compact", "description": "Compact conversation context"},
     {"name": "clear",   "description": "Clear the screen"},
     {"name": "quit",    "description": "Exit the CLI"},
 ]

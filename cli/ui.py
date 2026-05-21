@@ -5,16 +5,33 @@ gray-bar user-message trick and thinking indicator uses sys.stdout
 directly with ANSI escape codes.
 """
 
+import logging
 import sys
 
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
 console = Console(highlight=False)
+
+_DIM_RULE_STYLE = "#444444"  # matches the bottom toolbar color exactly
+
+
+def suppress_logs() -> None:
+    """Route all library noise to /tmp/minibots-cli.log, away from the chat window."""
+    handler = logging.FileHandler("/tmp/minibots-cli.log", mode="a")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logging.root.addHandler(handler)
+    logging.root.setLevel(logging.DEBUG)
+
+    for name in ("websocket", "engineio", "socketio", "urllib3", "httpx", "asyncio"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.WARNING)
+        lg.propagate = False  # don't let them reach any stderr handler
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +81,11 @@ def print_banner(base_url: str = "") -> None:
 # ---------------------------------------------------------------------------
 # Session header
 # ---------------------------------------------------------------------------
+
+def print_dim_rule() -> None:
+    """Dim horizontal rule — same #444444 as the bottom toolbar for visual consistency."""
+    console.rule(style=_DIM_RULE_STYLE)
+
 
 def print_session_header(bot_name: str, chat_id: str) -> None:
     label = f"{bot_name}  ·  {chat_id[:8]}…"
@@ -152,13 +174,15 @@ def print_user_message(text: str, replace_line: bool = True) -> None:
     replace_line=False: print directly (used for history replay).
     """
     if replace_line:
-        # Go up one line (where prompt_toolkit left the echo) and clear it.
-        sys.stdout.write("\033[A\033[2K\r")
+        # Cursor is 2 lines below the echo (echo + bottom rule printed by _read_input).
+        # Go up 2: clear bottom rule, then clear echo, land at echo line.
+        sys.stdout.write("\033[A\033[2K\033[A\033[2K\r")
         sys.stdout.flush()
+    safe = escape(text)
     line = f"> {text}"
     padding = " " * max(0, console.width - len(line))
-    console.print(f"[bold]{line}[/bold]{padding}", style="on grey19", no_wrap=True)
-    console.print()
+    console.print(f"[bold]> {safe}[/bold]{padding}", style="on grey19", no_wrap=True)
+    console.print()  # blank line after gray bar before response
 
 
 def print_message(role: str, content: str) -> None:
@@ -166,8 +190,8 @@ def print_message(role: str, content: str) -> None:
     if role == "user":
         print_user_message(content, replace_line=False)
     else:
-        console.print(f"[bold]●[/bold] {content}")
-        console.print()
+        console.print(f"[bold]●[/bold] {escape(content)}")
+        console.print()  # blank line after response before next dim rule
 
 
 def print_history(messages: list[dict]) -> None:
@@ -194,8 +218,7 @@ def print_history(messages: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def start_thinking() -> None:
-    """Print a blank separator then the thinking spinner on the same line."""
-    console.print()
+    """Write thinking indicator; stop_thinking() will erase it on the same line."""
     sys.stdout.write("\033[38;5;240m✺ Thinking…\033[0m")
     sys.stdout.flush()
 
@@ -207,9 +230,8 @@ def stop_thinking() -> None:
 
 
 def print_elapsed(seconds: float) -> None:
-    if seconds >= 2:
-        console.print(f"[dim]✺ Responded in {seconds:.0f}s[/dim]")
-        console.print()
+    """Print timer above the agent reply. Called before print_message."""
+    console.print(f"[dim]* Thought for {seconds:.1f}s[/dim]")
 
 
 # ---------------------------------------------------------------------------
