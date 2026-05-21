@@ -16,7 +16,7 @@ import uuid
 import questionary
 from dotenv import load_dotenv
 from prompt_toolkit import prompt as pt_prompt
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import FormattedText, HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
@@ -42,6 +42,7 @@ _PT_STYLE = Style.from_dict({
 })
 
 _COMPLETER = SlashCompleter()
+_TOOLBAR = FormattedText([("#444444", "─" * 300)])
 
 _KB = KeyBindings()
 
@@ -70,6 +71,7 @@ def _read_input() -> str:
         style=_PT_STYLE,
         reserve_space_for_menu=4,
         key_bindings=_KB,
+        bottom_toolbar=_TOOLBAR,
     ).strip()
 
 

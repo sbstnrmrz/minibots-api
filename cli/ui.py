@@ -158,10 +158,7 @@ def print_user_message(text: str, replace_line: bool = True) -> None:
     line = f"> {text}"
     padding = " " * max(0, console.width - len(line))
     console.print(f"[bold]{line}[/bold]{padding}", style="on grey19", no_wrap=True)
-    if replace_line:
-        console.rule(style="dim")  # separator line below live input
-    else:
-        console.print()  # blank line below history replay
+    console.print()
 
 
 def print_message(role: str, content: str) -> None:
