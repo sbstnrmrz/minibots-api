@@ -86,8 +86,8 @@ def require_api_key(
         if tenant:
             return tenant
 
-    # Development with no token configured at all
-    if not API_TOKEN and ENVIRONMENT == "development":
+    # Development with no token configured — only open when no token was sent
+    if not token and not API_TOKEN and ENVIRONMENT == "development":
         tenant = db.query(models.Tenant).filter(
             models.Tenant.id == DEFAULT_TENANT_ID
         ).first()
