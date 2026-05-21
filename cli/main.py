@@ -2,12 +2,10 @@
 
 Usage:
     uv run python -m cli.main
-    # or
-    uv run python cli/main.py
 
-Config (env vars or .env):
-    API_BASE_URL  Server base URL (default: http://localhost:8000)
-    API_TOKEN     Shared API token (matches the backend API_TOKEN)
+Config (.env or env vars):
+    API_BASE_URL   Server base URL  (default: http://localhost:8000)
+    API_TOKEN      Shared API token (must match backend API_TOKEN)
 """
 
 import os
@@ -15,123 +13,122 @@ import uuid
 
 import questionary
 from dotenv import load_dotenv
+from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style
 
 from cli.client import APIClient, APIError, SocketClient
-from cli.ui import (
-    clear_thinking,
-    console,
-    print_banner,
-    print_bots_table,
-    print_chats_table,
-    print_error,
-    print_history,
-    print_info,
-    print_message,
-    print_status,
-    print_thinking,
-)
+from cli.completer import SlashCompleter
+from cli import ui
 
 load_dotenv()
 
-_COMMANDS_HELP = (
-    "[dim]Commands: [bold]/resume[/bold] — pick another session  "
-    "[bold]/quit[/bold] — exit[/dim]"
-)
+# ---------------------------------------------------------------------------
+# prompt_toolkit style — dark, minimal, Claude Code-ish
+# ---------------------------------------------------------------------------
+
+_PT_STYLE = Style.from_dict({
+    "prompt": "#666666",
+    # dropdown menu
+    "completion-menu":                    "bg:#1a1a1a",
+    "completion-menu.completion":         "bg:#1a1a1a #cccccc",
+    "completion-menu.completion.current": "bg:#264f78 #ffffff bold",
+    "completion-menu.meta.completion":         "bg:#1a1a1a #555555",
+    "completion-menu.meta.completion.current": "bg:#264f78 #888888",
+    "scrollbar.background":  "bg:#1a1a1a",
+    "scrollbar.button":      "bg:#444444",
+})
+
+_COMPLETER = SlashCompleter()
+
+
+def _read_input() -> str:
+    """Read one line from the user via prompt_toolkit (slash autocomplete active)."""
+    return pt_prompt(
+        HTML("<ansibrightblack>> </ansibrightblack>"),
+        completer=_COMPLETER,
+        complete_while_typing=True,
+        style=_PT_STYLE,
+        reserve_space_for_menu=4,
+    ).strip()
 
 
 # ---------------------------------------------------------------------------
 # Menu helpers
 # ---------------------------------------------------------------------------
 
-def _select_bot(api: APIClient) -> dict:
+def _menu_select_bot(api: APIClient) -> dict:
     try:
         bots = api.list_bots()
     except APIError as e:
-        print_error(str(e))
+        ui.print_error(str(e))
         raise SystemExit(1)
-
     if not bots:
-        print_error("No bots found. Seed one with setup_test.py or POST /bots.")
+        ui.print_error("No bots found. Seed one via setup_test.py or POST /bots.")
         raise SystemExit(1)
 
-    print_bots_table(bots)
+    ui.print_bots_table(bots)
     choices = [
         questionary.Choice(
-            title=f"{b['name']}  [dim]{b.get('bot_type', '?')}  id={b['id']}[/dim]",
+            title=f"{b['name']}  [{b.get('bot_type', '?')}]  id={b['id']}",
             value=b,
         )
         for b in bots
     ]
-    bot = questionary.select(
-        "Select a bot for this session:",
-        choices=choices,
-        use_shortcuts=False,
-    ).ask()
-
+    bot = questionary.select("Select a bot:", choices=choices).ask()
     if bot is None:
         raise KeyboardInterrupt
     return bot
 
 
-def _select_chat(api: APIClient) -> dict | None:
+def _menu_select_chat(api: APIClient) -> dict | None:
     try:
         chats = api.list_chats()
     except APIError as e:
-        print_error(str(e))
+        ui.print_error(str(e))
         return None
 
     if not chats:
-        print_info("No existing sessions found.")
+        ui.print_info("No existing sessions found.")
         return None
 
-    print_chats_table(chats)
+    ui.print_chats_table(chats)
 
     def _label(c: dict) -> str:
-        snippet = (c.get("last_message") or "")[:40]
+        snippet = (c.get("last_message") or "")[:42]
         return (
-            f"bot={c['bot_id']}  {c['chat_id'][:20]}…  "
+            f"bot={c['bot_id']}  "
+            f"{c['chat_id'][:18]}…  "
             f"({c.get('message_count', 0)} msgs)  \"{snippet}\""
         )
 
     choices = [questionary.Choice(title=_label(c), value=c) for c in chats]
-    choices.append(questionary.Choice(title="← Back to main menu", value=None))
-
-    return questionary.select(
-        "Select a session to resume:",
-        choices=choices,
-        use_shortcuts=False,
-    ).ask()
+    choices.append(questionary.Choice(title="← Back", value=None))
+    return questionary.select("Select a session to resume:", choices=choices).ask()
 
 
 # ---------------------------------------------------------------------------
 # Chat loop
 # ---------------------------------------------------------------------------
 
-def _run_chat_loop(
+def _run_chat(
     api: APIClient,
     sio: SocketClient,
     bot: dict,
     chat_id: str,
     history: list[dict],
 ) -> str:
-    """Run the interactive chat loop. Returns 'resume' or 'quit'."""
-    bot_name = bot["name"]
-    bot_id = bot["id"]
-
-    console.print()
-    print_status(
-        f"Chatting with [bold]{bot_name}[/bold]  "
-        f"[dim]session {chat_id[:16]}…[/dim]"
-    )
-    console.print(_COMMANDS_HELP)
-    console.print()
+    """Interactive chat loop. Returns 'quit' | 'resume' | 'new'."""
+    ui.print_session_header(bot["name"], chat_id)
 
     if history:
-        print_history(history)
+        ui.print_history(history)
+
+    bot_id = bot["id"]
 
     while True:
         try:
-            user_input = console.input("[bold green]You[/bold green]: ").strip()
+            user_input = _read_input()
         except (EOFError, KeyboardInterrupt):
             return "quit"
 
@@ -139,28 +136,61 @@ def _run_chat_loop(
             continue
 
         cmd = user_input.lower()
-        if cmd in ("/quit", "/exit", "quit", "exit"):
+
+        # ── commands ──────────────────────────────────────────────────────
+        if cmd == "/help":
+            ui.print_help()
+            continue
+
+        if cmd == "/quit" or cmd == "/exit":
             return "quit"
+
         if cmd == "/resume":
             return "resume"
 
-        print_thinking()
+        if cmd == "/new":
+            return "new"
+
+        if cmd == "/clear":
+            ui.clear_screen()
+            ui.print_session_header(bot["name"], chat_id)
+            continue
+
+        if cmd == "/bots":
+            try:
+                ui.print_bots_table(api.list_bots())
+            except APIError as e:
+                ui.print_error(e.detail)
+            continue
+
+        if cmd == "/history":
+            try:
+                data = api.get_chat_history(chat_id)
+                ui.print_history(data.get("messages", []))
+            except APIError as e:
+                ui.print_error(e.detail)
+            continue
+
+        if cmd.startswith("/"):
+            ui.print_error(f"Unknown command {cmd!r}  —  type [bold]/help[/bold] for the list.")
+            continue
+
+        # ── send message ───────────────────────────────────────────────────
+        ui.print_thinking()
         try:
             sio.send(content=user_input, bot_id=bot_id, chat_id=chat_id)
             role, content = sio.receive_reply(timeout=90)
-            clear_thinking()
-            print_message(role, content)
+            ui.clear_thinking()
+            ui.print_message(role, content)
         except TimeoutError as e:
-            clear_thinking()
-            print_error(str(e))
+            ui.clear_thinking()
+            ui.print_error(str(e))
         except APIError as e:
-            clear_thinking()
-            print_error(e.detail)
+            ui.clear_thinking()
+            ui.print_error(e.detail)
         except Exception as e:
-            clear_thinking()
-            print_error(f"Unexpected error: {e}")
-
-    return "quit"
+            ui.clear_thinking()
+            ui.print_error(f"Unexpected error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -170,94 +200,98 @@ def _run_chat_loop(
 def main() -> None:
     load_dotenv()
     base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
-    token = os.getenv("API_TOKEN", "")
+    token    = os.getenv("API_TOKEN", "")
 
-    print_banner()
+    ui.print_banner(base_url)
 
-    # --- health check ---
+    # Health check
     api = APIClient(base_url=base_url, token=token)
     if not api.health():
-        print_error(
-            f"Server unreachable at [bold]{base_url}[/bold].\n"
-            "  Start it with: [bold]uv run fastapi dev app/main.py[/bold]"
+        ui.print_error(
+            f"Server unreachable at {base_url}\n"
+            "  Start it with:  [bold]uv run fastapi dev app/main.py[/bold]"
         )
         raise SystemExit(1)
-    print_info(f"Connected to {base_url}")
+    ui.print_info(f"Connected  ·  {base_url}")
 
-    # --- socket.io ---
+    # Socket
     sio = SocketClient(base_url=base_url, token=token)
     try:
         sio.connect()
-        print_info("Socket ready.")
+        ui.print_info("Socket ready")
     except Exception as e:
-        print_error(f"Socket connection failed: {e}")
+        ui.print_error(f"Socket connection failed: {e}")
         api.close()
         raise SystemExit(1)
 
-    console.print()
+    ui.console.print()
 
     try:
+        action = "menu"   # start at main menu
+        last_new = False  # coming from /new means skip straight to bot select
+
         while True:
-            action = questionary.select(
-                "What would you like to do?",
-                choices=[
-                    questionary.Choice("💬  New Chat", value="new"),
-                    questionary.Choice("🔁  Resume Session", value="resume"),
-                    questionary.Choice("🚪  Quit", value="quit"),
-                ],
-                use_shortcuts=True,
-            ).ask()
+            # ── main menu ─────────────────────────────────────────────────
+            if action == "menu":
+                choice = questionary.select(
+                    "What would you like to do?",
+                    choices=[
+                        questionary.Choice("💬  New Chat",       value="new"),
+                        questionary.Choice("🔁  Resume Session", value="resume"),
+                        questionary.Choice("🚪  Quit",           value="quit"),
+                    ],
+                    use_shortcuts=True,
+                ).ask()
+                if choice is None or choice == "quit":
+                    break
+                action = choice
 
-            if action is None or action == "quit":
-                break
-
-            # ── New chat ────────────────────────────────────────────────
+            # ── new chat ──────────────────────────────────────────────────
             if action == "new":
                 try:
-                    bot = _select_bot(api)
+                    bot = _menu_select_bot(api)
                 except (KeyboardInterrupt, SystemExit):
+                    action = "menu"
                     continue
-                chat_id = str(uuid.uuid4())
-                result = _run_chat_loop(api, sio, bot, chat_id, [])
-                if result == "quit":
-                    break
-                # result == "resume" → fall through to resume flow next iteration
+                action = _run_chat(api, sio, bot, str(uuid.uuid4()), [])
+                continue
 
-            # ── Resume session ──────────────────────────────────────────
-            elif action == "resume":
-                chat = _select_chat(api)
+            # ── resume session ────────────────────────────────────────────
+            if action == "resume":
+                chat = _menu_select_chat(api)
                 if chat is None:
+                    action = "menu"
                     continue
                 try:
-                    history_data = api.get_chat_history(chat["chat_id"])
-                    messages = history_data.get("messages", [])
-                except APIError as e:
-                    print_error(f"Could not load history: {e.detail}")
-                    continue
-
-                # Resolve the bot for this chat
-                try:
+                    data = api.get_chat_history(chat["chat_id"])
+                    history = data.get("messages", [])
                     bots = api.list_bots()
                     bot = next((b for b in bots if b["id"] == chat["bot_id"]), None)
                 except APIError as e:
-                    print_error(str(e))
+                    ui.print_error(str(e))
+                    action = "menu"
                     continue
-
                 if bot is None:
-                    print_error(f"Bot {chat['bot_id']} not found — it may have been deleted.")
+                    ui.print_error(f"Bot {chat['bot_id']} not found — may have been deleted.")
+                    action = "menu"
                     continue
+                action = _run_chat(api, sio, bot, chat["chat_id"], history)
+                continue
 
-                result = _run_chat_loop(api, sio, bot, chat["chat_id"], messages)
-                if result == "quit":
-                    break
+            # ── quit ──────────────────────────────────────────────────────
+            if action == "quit":
+                break
+
+            # fallback (e.g. /help returned nothing useful)
+            action = "menu"
 
     except KeyboardInterrupt:
         pass
     finally:
         sio.disconnect()
         api.close()
-        console.print()
-        print_info("Goodbye.")
+        ui.console.print()
+        ui.print_info("Goodbye.")
 
 
 if __name__ == "__main__":
