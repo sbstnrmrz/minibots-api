@@ -149,6 +149,7 @@ class SetupPayload(BaseModel):
     general: GeneralInfo | None = None
     contact: ContactInfo | None = None
     links: list[Link] = []
+    gcal_calendar_id: str | None = None
 
     model_config = {"populate_by_name": True, "alias_generator": None}
 
@@ -211,6 +212,9 @@ async def setup(
             tenant.contact_phone = data.contact.phone
         if data.contact.company_name:
             tenant.name = data.contact.company_name
+
+    if data.gcal_calendar_id is not None:
+        tenant.gcal_calendar_id = data.gcal_calendar_id
 
     # agent_config + links
     links_data = [link.model_dump() for link in data.links]

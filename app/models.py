@@ -23,6 +23,7 @@ class Tenant(Base):
     agent_config_id = Column(Integer, ForeignKey("agent_configs.id"), nullable=True)
     contact_name = Column(String, nullable=True)
     contact_phone = Column(String, nullable=True)
+    gcal_calendar_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

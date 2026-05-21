@@ -55,11 +55,13 @@ class SchedulingAgent(Agent):
         session_id: str | None = None,
         tool_names: list[str] | None = None,
         tenant_id: str | None = None,
+        calendar_id: str | None = None,
     ) -> None:
         super().__init__(tool_names if tool_names is not None else _DEFAULT_TOOL_NAMES)
         self._system_prompt = system_prompt
         self._session_id = session_id
         self._tenant_id = tenant_id
+        self._calendar_id = calendar_id
         self._memory = MemoryStore()
 
     def run(self, ctx: AgentContext) -> AgentContext:
@@ -84,14 +86,15 @@ class SchedulingAgent(Agent):
         tools = get_tools_for_agent(self._tool_names)
         base_dispatcher = make_dispatcher_for_agent(self._tool_names)
 
-        # Inject chat_id and tenant_id into book_reservation args; the LLM
+        # Inject server-side values into book_reservation args; the LLM
         # does not know these values and must not be asked to supply them.
         _chat_id = ctx.chat_id
         _tenant_id = self._tenant_id
+        _calendar_id = self._calendar_id
 
         def dispatcher(name: str, args: dict[str, Any]) -> Any:
             if name == "book_reservation":
-                args = {**args, "chat_id": _chat_id, "tenant_id": _tenant_id}
+                args = {**args, "chat_id": _chat_id, "tenant_id": _tenant_id, "calendar_id": _calendar_id}
             return base_dispatcher(name, args)
 
         reply = call_llm(

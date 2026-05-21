@@ -157,6 +157,7 @@ def book_reservation(
     booker_contact: str = "",
     chat_id: str | None = None,
     tenant_id: str | None = None,
+    calendar_id: str | None = None,
 ) -> dict:
     """Persist a confirmed reservation. Returns {status, reservation_id, gcal_event_id}."""
     _ensure_table_once()
@@ -199,6 +200,7 @@ def book_reservation(
             start_time=start,
             end_time=end,
             description=f"Contact: {booker_contact}" if booker_contact else "",
+            calendar_id=calendar_id,
         )
     except Exception as e:
         gcal_error = str(e)

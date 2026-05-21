@@ -128,5 +128,10 @@ with engine.connect() as conn:
             ON reservations (start_time, end_time);
     """))
 
+    conn.execute(text("""
+        ALTER TABLE tenants
+            ADD COLUMN IF NOT EXISTS gcal_calendar_id VARCHAR;
+    """))
+
     conn.commit()
     print("Migration complete.")

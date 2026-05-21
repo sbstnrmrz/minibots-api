@@ -53,13 +53,14 @@ def create_event(
     start_time: datetime,
     end_time: datetime,
     description: str = "",
+    calendar_id: str | None = None,
 ) -> str | None:
     """Create a Google Calendar event. Returns the event ID or None on failure."""
     service = _get_service()
     if service is None:
         return None
 
-    calendar_id = os.getenv("GCAL_CALENDAR_ID", "primary")
+    calendar_id = calendar_id or os.getenv("GCAL_CALENDAR_ID", "primary")
     event_body = {
         "summary": summary,
         "description": description,
