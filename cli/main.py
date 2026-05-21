@@ -62,7 +62,7 @@ def _kb_double_esc(event):
 
 
 def _read_input() -> str:
-    ui.console.print()  # blank line above prompt
+    ui.console.rule(style="dim")  # separator line above prompt
     return pt_prompt(
         HTML("<ansibrightblack>&gt; </ansibrightblack>"),
         completer=_COMPLETER,
