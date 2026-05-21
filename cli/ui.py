@@ -1,43 +1,81 @@
 """Terminal rendering — Claude Code aesthetic.
 
-Uses rich for all output. No network calls, no business logic.
+All output goes through rich Console. Cursor manipulation for the
+gray-bar user-message trick and thinking indicator uses sys.stdout
+directly with ANSI escape codes.
 """
+
+import sys
 
 from rich import box
 from rich.console import Console
+from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
 console = Console(highlight=False)
 
+
 # ---------------------------------------------------------------------------
-# Layout
+# Banner
 # ---------------------------------------------------------------------------
 
 def print_banner(base_url: str = "") -> None:
-    console.print()
-    line = Text()
-    line.append(" ✦ ", style="bold cyan")
-    line.append("minibots", style="bold white")
-    if base_url:
-        line.append(f"  {base_url}", style="dim")
-    console.print(line)
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=2)
+
+    left = (
+        "\n"
+        "[bold white] ✦ minibots[/bold white]\n"
+        "\n"
+        f"[dim] {base_url or 'http://localhost:8000'}[/dim]\n"
+        "[dim] Interactive terminal client[/dim]\n"
+    )
+
+    right = (
+        "[bold #e88080]Getting started[/bold #e88080]\n"
+        "Type [bold white]/help[/bold white] to see all available commands\n"
+        "\n"
+        "[bold #e88080]Commands[/bold #e88080]\n"
+        "[dim]/new      Start a new chat\n"
+        "/resume   Resume a previous session\n"
+        "/bots     List all bots\n"
+        "/history  Show conversation history\n"
+        "/quit     Exit[/dim]"
+    )
+
+    grid.add_row(left, right)
+
     console.print(
-        "  [dim]Type [bold white]/help[/bold white] to see commands[/dim]"
+        Panel(
+            grid,
+            title="[dim]minibots cli[/dim]",
+            title_align="left",
+            border_style="#cc4444",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
     )
     console.print()
 
 
+# ---------------------------------------------------------------------------
+# Session header
+# ---------------------------------------------------------------------------
+
 def print_session_header(bot_name: str, chat_id: str) -> None:
-    console.print()
-    console.print(Rule(
-        f"[dim]{bot_name}[/dim]  [dim white]{chat_id[:16]}…[/dim white]",
-        style="dim",
-        align="left",
-    ))
+    label = f"{bot_name}  ·  {chat_id[:8]}…"
+    width = console.width
+    dashes = "─" * max(0, width - len(label) - 2)
+    console.print(f"[dim]{label} {dashes}[/dim]")
     console.print()
 
+
+# ---------------------------------------------------------------------------
+# Help / tables
+# ---------------------------------------------------------------------------
 
 def print_help() -> None:
     console.print()
@@ -56,10 +94,6 @@ def print_help() -> None:
         console.print(f"  [bold cyan]{name:<12}[/bold cyan] [dim]{desc}[/dim]")
     console.print()
 
-
-# ---------------------------------------------------------------------------
-# Data tables
-# ---------------------------------------------------------------------------
 
 def print_bots_table(bots: list[dict]) -> None:
     console.print()
@@ -110,6 +144,32 @@ def print_chats_table(chats: list[dict]) -> None:
 # Messages
 # ---------------------------------------------------------------------------
 
+def print_user_message(text: str, replace_line: bool = True) -> None:
+    """Print user message as a full-width gray bar.
+
+    replace_line=True: move cursor up one line and overwrite the
+    prompt_toolkit echo with the styled version (used after pt_prompt).
+    replace_line=False: print directly (used for history replay).
+    """
+    if replace_line:
+        # Go up one line (where prompt_toolkit left the echo) and clear it.
+        sys.stdout.write("\033[A\033[2K\r")
+        sys.stdout.flush()
+    line = f"> {text}"
+    padding = " " * max(0, console.width - len(line))
+    console.print(f"[bold]{line}[/bold]{padding}", style="on grey19", no_wrap=True)
+
+
+def print_message(role: str, content: str) -> None:
+    """Print an agent reply with ● bullet. User messages in history use the bar."""
+    if role == "user":
+        print_user_message(content, replace_line=False)
+        console.print()
+    else:
+        console.print(f"[bold]●[/bold] {content}")
+        console.print()
+
+
 def print_history(messages: list[dict]) -> None:
     if not messages:
         console.print("[dim]  No messages in this session yet.[/dim]\n")
@@ -118,31 +178,43 @@ def print_history(messages: list[dict]) -> None:
     console.print(Rule("[dim]history[/dim]", style="dim"))
     console.print()
     for m in messages:
-        _print_bubble(m.get("role", "?"), m.get("content", ""), dimmed=True)
+        role = m.get("role", "?")
+        content = m.get("content", "")
+        if role == "user":
+            print_user_message(content, replace_line=False)
+            console.print()
+        else:
+            console.print(f"[dim bold]●[/dim bold] [dim]{content}[/dim]")
+            console.print()
     console.print(Rule(style="dim"))
     console.print()
 
 
-def print_message(role: str, content: str) -> None:
-    _print_bubble(role, content)
+# ---------------------------------------------------------------------------
+# Thinking indicator
+# ---------------------------------------------------------------------------
 
-
-def _print_bubble(role: str, content: str, dimmed: bool = False) -> None:
-    if role == "user":
-        label = Text("You", style="bold green")
-    else:
-        label = Text("Agent", style="bold white")
-
-    dim_open  = "[dim]" if dimmed else ""
-    dim_close = "[/dim]" if dimmed else ""
-
-    console.print(label)
-    console.print(f"{dim_open}  {content}{dim_close}")
+def start_thinking() -> None:
+    """Print a blank separator then the thinking spinner on the same line."""
     console.print()
+    sys.stdout.write("\033[38;5;240m✺ Thinking…\033[0m")
+    sys.stdout.flush()
+
+
+def stop_thinking() -> None:
+    """Erase the thinking indicator line so the agent reply can replace it."""
+    sys.stdout.write("\r\033[2K")
+    sys.stdout.flush()
+
+
+def print_elapsed(seconds: float) -> None:
+    if seconds >= 2:
+        console.print(f"[dim]✺ Responded in {seconds:.0f}s[/dim]")
+        console.print()
 
 
 # ---------------------------------------------------------------------------
-# Status / misc
+# Misc
 # ---------------------------------------------------------------------------
 
 def print_error(msg: str) -> None:
@@ -155,14 +227,6 @@ def print_info(msg: str) -> None:
 
 def print_status(msg: str) -> None:
     console.print(f"  {msg}")
-
-
-def print_thinking() -> None:
-    console.print("  [dim]…[/dim]", end="\r")
-
-
-def clear_thinking() -> None:
-    console.print("     ", end="\r")
 
 
 def clear_screen() -> None:

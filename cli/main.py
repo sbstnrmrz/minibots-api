@@ -9,6 +9,7 @@ Config (.env or env vars):
 """
 
 import os
+import time
 import uuid
 
 import questionary
@@ -24,28 +25,26 @@ from cli import ui
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# prompt_toolkit style — dark, minimal, Claude Code-ish
+# prompt_toolkit style
 # ---------------------------------------------------------------------------
 
 _PT_STYLE = Style.from_dict({
     "prompt": "#666666",
-    # dropdown menu
-    "completion-menu":                    "bg:#1a1a1a",
-    "completion-menu.completion":         "bg:#1a1a1a #cccccc",
-    "completion-menu.completion.current": "bg:#264f78 #ffffff bold",
+    "completion-menu":                         "bg:#1a1a1a",
+    "completion-menu.completion":              "bg:#1a1a1a #cccccc",
+    "completion-menu.completion.current":      "bg:#264f78 #ffffff bold",
     "completion-menu.meta.completion":         "bg:#1a1a1a #555555",
     "completion-menu.meta.completion.current": "bg:#264f78 #888888",
-    "scrollbar.background":  "bg:#1a1a1a",
-    "scrollbar.button":      "bg:#444444",
+    "scrollbar.background":                    "bg:#1a1a1a",
+    "scrollbar.button":                        "bg:#444444",
 })
 
 _COMPLETER = SlashCompleter()
 
 
 def _read_input() -> str:
-    """Read one line from the user via prompt_toolkit (slash autocomplete active)."""
     return pt_prompt(
-        HTML("<ansibrightblack>> </ansibrightblack>"),
+        HTML("<ansibrightblack>&gt; </ansibrightblack>"),
         completer=_COMPLETER,
         complete_while_typing=True,
         style=_PT_STYLE,
@@ -135,14 +134,17 @@ def _run_chat(
         if not user_input:
             continue
 
+        # Reprint the input line as a styled gray bar (replaces prompt_toolkit echo)
+        ui.print_user_message(user_input, replace_line=True)
+
         cmd = user_input.lower()
 
-        # ── commands ──────────────────────────────────────────────────────
+        # ── slash commands ────────────────────────────────────────────────
         if cmd == "/help":
             ui.print_help()
             continue
 
-        if cmd == "/quit" or cmd == "/exit":
+        if cmd in ("/quit", "/exit"):
             return "quit"
 
         if cmd == "/resume":
@@ -172,24 +174,30 @@ def _run_chat(
             continue
 
         if cmd.startswith("/"):
-            ui.print_error(f"Unknown command {cmd!r}  —  type [bold]/help[/bold] for the list.")
+            ui.print_error(
+                f"Unknown command [bold]{cmd}[/bold]  —  "
+                "type [bold]/help[/bold] to see all commands."
+            )
             continue
 
-        # ── send message ───────────────────────────────────────────────────
-        ui.print_thinking()
+        # ── send to agent ─────────────────────────────────────────────────
+        ui.start_thinking()
+        t0 = time.time()
         try:
             sio.send(content=user_input, bot_id=bot_id, chat_id=chat_id)
             role, content = sio.receive_reply(timeout=90)
-            ui.clear_thinking()
+            elapsed = time.time() - t0
+            ui.stop_thinking()
             ui.print_message(role, content)
+            ui.print_elapsed(elapsed)
         except TimeoutError as e:
-            ui.clear_thinking()
+            ui.stop_thinking()
             ui.print_error(str(e))
         except APIError as e:
-            ui.clear_thinking()
+            ui.stop_thinking()
             ui.print_error(e.detail)
         except Exception as e:
-            ui.clear_thinking()
+            ui.stop_thinking()
             ui.print_error(f"Unexpected error: {e}")
 
 
@@ -204,7 +212,6 @@ def main() -> None:
 
     ui.print_banner(base_url)
 
-    # Health check
     api = APIClient(base_url=base_url, token=token)
     if not api.health():
         ui.print_error(
@@ -214,7 +221,6 @@ def main() -> None:
         raise SystemExit(1)
     ui.print_info(f"Connected  ·  {base_url}")
 
-    # Socket
     sio = SocketClient(base_url=base_url, token=token)
     try:
         sio.connect()
@@ -227,11 +233,10 @@ def main() -> None:
     ui.console.print()
 
     try:
-        action = "menu"   # start at main menu
-        last_new = False  # coming from /new means skip straight to bot select
+        action = "menu"
 
         while True:
-            # ── main menu ─────────────────────────────────────────────────
+            # ── main menu ──────────────────────────────────────────────────
             if action == "menu":
                 choice = questionary.select(
                     "What would you like to do?",
@@ -246,7 +251,7 @@ def main() -> None:
                     break
                 action = choice
 
-            # ── new chat ──────────────────────────────────────────────────
+            # ── new chat ───────────────────────────────────────────────────
             if action == "new":
                 try:
                     bot = _menu_select_bot(api)
@@ -256,7 +261,7 @@ def main() -> None:
                 action = _run_chat(api, sio, bot, str(uuid.uuid4()), [])
                 continue
 
-            # ── resume session ────────────────────────────────────────────
+            # ── resume session ─────────────────────────────────────────────
             if action == "resume":
                 chat = _menu_select_chat(api)
                 if chat is None:
@@ -272,17 +277,17 @@ def main() -> None:
                     action = "menu"
                     continue
                 if bot is None:
-                    ui.print_error(f"Bot {chat['bot_id']} not found — may have been deleted.")
+                    ui.print_error(
+                        f"Bot {chat['bot_id']} not found — may have been deleted."
+                    )
                     action = "menu"
                     continue
                 action = _run_chat(api, sio, bot, chat["chat_id"], history)
                 continue
 
-            # ── quit ──────────────────────────────────────────────────────
             if action == "quit":
                 break
 
-            # fallback (e.g. /help returned nothing useful)
             action = "menu"
 
     except KeyboardInterrupt:
