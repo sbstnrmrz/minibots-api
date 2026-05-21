@@ -91,6 +91,22 @@ def _build_agent(
             tool_names=tool_names,
         )
 
+    if agent_type == "scheduler":
+        from app.agents.scheduling_agent import SchedulingAgent, SCHEDULING_SYSTEM_PROMPT
+        base_prompt = agent_config.system_prompt or SCHEDULING_SYSTEM_PROMPT
+        tenant_id = config.get("tenant_id")
+        calendar_id: str | None = None
+        if tenant_id:
+            tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
+            if tenant:
+                calendar_id = tenant.gcal_calendar_id
+        return SchedulingAgent(
+            system_prompt=base_prompt,
+            tool_names=tool_names or None,
+            tenant_id=tenant_id,
+            calendar_id=calendar_id,
+        )
+
     raise ValueError(f"Unknown agent_type: '{agent_type}'")
 
 

@@ -106,5 +106,45 @@ with engine.connect() as conn:
         USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
     """))
 
+    # --- scheduling / reservations ---
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS reservations (
+            id               SERIAL PRIMARY KEY,
+            tenant_id        UUID        REFERENCES tenants(id),
+            chat_id          VARCHAR,
+            booker_name      VARCHAR     NOT NULL,
+            booker_contact   VARCHAR,
+            service          VARCHAR,
+            start_time       TIMESTAMPTZ NOT NULL,
+            end_time         TIMESTAMPTZ NOT NULL,
+            duration_minutes INTEGER     NOT NULL,
+            gcal_event_id    VARCHAR,
+            gcal_sync_error  VARCHAR,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_reservations_time_range
+            ON reservations (start_time, end_time);
+    """))
+
+    conn.execute(text("""
+        ALTER TABLE tenants
+            ADD COLUMN IF NOT EXISTS gcal_calendar_id VARCHAR,
+            ADD COLUMN IF NOT EXISTS api_token VARCHAR UNIQUE;
+    """))
+
+    conn.execute(text("""
+        ALTER TABLE workflows
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+    """))
+
+    conn.execute(text("""
+        ALTER TABLE bots
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id),
+            DROP COLUMN IF EXISTS system_prompt,
+            DROP COLUMN IF EXISTS documents_urls;
+    """))
+
     conn.commit()
     print("Migration complete.")

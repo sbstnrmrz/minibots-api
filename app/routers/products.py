@@ -9,12 +9,20 @@ from app.database import get_db
 from app import models
 from app.services.sheets import fetch_sheet
 
-router = APIRouter(tags=["products"], dependencies=[Depends(require_api_key)])
+router = APIRouter(tags=["products"])
 
 
 @router.get("/products", response_model=list[str])
-async def get_products(bot_id: int, db: Session = Depends(get_db)):
-    bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
+async def get_products(
+    bot_id: int,
+    current_tenant: models.Tenant = Depends(require_api_key),
+    db: Session = Depends(get_db),
+):
+    bot = (
+        db.query(models.Bot)
+        .filter(models.Bot.id == bot_id, models.Bot.tenant_id == current_tenant.id)
+        .first()
+    )
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     if not bot.spreadsheet_id:
