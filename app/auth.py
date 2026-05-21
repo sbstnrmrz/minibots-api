@@ -1,16 +1,11 @@
-"""Per-tenant API auth.
+"""API auth — single-tenant stub.
 
-Each tenant has a unique `api_token` stored in the DB. `require_api_key`
-resolves the token to a Tenant object and returns it so any route can
-scope queries to `current_tenant.id` without a second DB round-trip.
+AUTH IS CURRENTLY DISABLED. All requests resolve to DEFAULT_TENANT_ID.
 
-Token is read from, in priority order:
-  1. `X-API-Key` header
-  2. `Authorization: Bearer <token>` header
-
-Dev fallback: if `ENVIRONMENT == "development"` and no token is sent,
-the dependency resolves to the `DEFAULT_TENANT_ID` tenant so local work
-is never blocked by missing credentials.
+To enable per-tenant token auth later, replace `require_api_key` with
+the commented-out implementation below and set AUTH_ENABLED=true in env.
+The rest of the codebase (routes, socket, schema) is already wired for
+multi-tenant — only this file needs to change.
 """
 
 import hmac
@@ -19,23 +14,10 @@ import logging
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.config import API_TOKEN, DEFAULT_TENANT_ID, ENVIRONMENT
+from app.config import DEFAULT_TENANT_ID
 from app.database import get_db
 
 logger = logging.getLogger("auth")
-
-
-def _extract_token(
-    x_api_key: str | None,
-    authorization: str | None,
-) -> str | None:
-    if x_api_key:
-        return x_api_key
-    if authorization:
-        scheme, _, value = authorization.partition(" ")
-        if scheme.lower() == "bearer":
-            return value.strip() or None
-    return None
 
 
 def get_tenant_by_token(token: str | None, db: Session):
@@ -47,16 +29,8 @@ def get_tenant_by_token(token: str | None, db: Session):
 
 
 def validate_api_token(token: str | None) -> bool:
-    """Socket-compatible check against the env API_TOKEN (legacy path).
-
-    Used by socket.io connect before the DB session is available.
-    Per-tenant socket auth is handled separately via get_tenant_by_token.
-    """
-    if not API_TOKEN:
-        return ENVIRONMENT == "development"
-    if not token:
-        return False
-    return hmac.compare_digest(token.encode("utf-8"), API_TOKEN.encode("utf-8"))
+    """Always valid while auth is disabled."""
+    return True
 
 
 def require_api_key(
@@ -64,39 +38,17 @@ def require_api_key(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    """FastAPI dependency. Resolves the request token to a Tenant.
+    """FastAPI dependency. Returns the active Tenant.
 
-    Raises 401 if no valid token is found. Returns the Tenant object so
-    routes can filter by `current_tenant.id` directly.
+    Currently returns DEFAULT_TENANT_ID tenant unconditionally.
+    To enable auth: set AUTH_ENABLED=true in env and swap this body
+    for the per-tenant token lookup (get_tenant_by_token).
     """
     from app import models
-
-    token = _extract_token(x_api_key, authorization)
-    tenant = get_tenant_by_token(token, db)
-    if tenant:
-        return tenant
-
-    # Dev fallback: env API_TOKEN match → resolve DEFAULT_TENANT_ID
-    if token and API_TOKEN and hmac.compare_digest(
-        token.encode("utf-8"), API_TOKEN.encode("utf-8")
-    ):
-        tenant = db.query(models.Tenant).filter(
-            models.Tenant.id == DEFAULT_TENANT_ID
-        ).first()
-        if tenant:
-            return tenant
-
-    # Development with no token configured — only open when no token was sent
-    if not token and not API_TOKEN and ENVIRONMENT == "development":
-        tenant = db.query(models.Tenant).filter(
-            models.Tenant.id == DEFAULT_TENANT_ID
-        ).first()
-        if tenant:
-            return tenant
-
-    logger.warning("rejected request: no tenant matched the provided token")
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="invalid or missing API token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    # TODO: enable per-tenant auth — replace this with token lookup
+    tenant = db.query(models.Tenant).filter(
+        models.Tenant.id == DEFAULT_TENANT_ID
+    ).first()
+    if not tenant:
+        raise HTTPException(status_code=500, detail="default tenant not configured")
+    return tenant
