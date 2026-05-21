@@ -158,13 +158,13 @@ def print_user_message(text: str, replace_line: bool = True) -> None:
     line = f"> {text}"
     padding = " " * max(0, console.width - len(line))
     console.print(f"[bold]{line}[/bold]{padding}", style="on grey19", no_wrap=True)
+    console.print()  # blank line below gray bar
 
 
 def print_message(role: str, content: str) -> None:
     """Print an agent reply with ● bullet. User messages in history use the bar."""
     if role == "user":
         print_user_message(content, replace_line=False)
-        console.print()
     else:
         console.print(f"[bold]●[/bold] {content}")
         console.print()
@@ -182,7 +182,6 @@ def print_history(messages: list[dict]) -> None:
         content = m.get("content", "")
         if role == "user":
             print_user_message(content, replace_line=False)
-            console.print()
         else:
             console.print(f"[dim bold]●[/dim bold] [dim]{content}[/dim]")
             console.print()

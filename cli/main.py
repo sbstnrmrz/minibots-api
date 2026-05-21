@@ -9,6 +9,7 @@ Config (.env or env vars):
 """
 
 import os
+import sys
 import time
 import uuid
 
@@ -16,6 +17,7 @@ import questionary
 from dotenv import load_dotenv
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
 from cli.client import APIClient, APIError, SocketClient
@@ -41,14 +43,33 @@ _PT_STYLE = Style.from_dict({
 
 _COMPLETER = SlashCompleter()
 
+_KB = KeyBindings()
+
+@_KB.add('c-c')
+def _kb_ctrl_c(event):
+    buf = event.app.current_buffer
+    if buf.text:
+        buf.text = ''
+        buf.cursor_position = 0
+    else:
+        event.app.exit(exception=KeyboardInterrupt)
+
+@_KB.add('escape', 'escape', eager=True)
+def _kb_double_esc(event):
+    buf = event.app.current_buffer
+    buf.text = ''
+    buf.cursor_position = 0
+
 
 def _read_input() -> str:
+    ui.console.print()  # blank line above prompt
     return pt_prompt(
         HTML("<ansibrightblack>&gt; </ansibrightblack>"),
         completer=_COMPLETER,
         complete_while_typing=True,
         style=_PT_STYLE,
         reserve_space_for_menu=4,
+        key_bindings=_KB,
     ).strip()
 
 
@@ -132,6 +153,9 @@ def _run_chat(
             return "quit"
 
         if not user_input:
+            # Clear empty prompt echo + blank line above it (2 lines)
+            sys.stdout.write("\033[A\033[2K\033[A\033[2K\r")
+            sys.stdout.flush()
             continue
 
         # Reprint the input line as a styled gray bar (replaces prompt_toolkit echo)
