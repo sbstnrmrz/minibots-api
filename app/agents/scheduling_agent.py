@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from app.agents.base import Agent, AgentContext
@@ -27,9 +28,9 @@ STEP 1 — COLLECT INFORMATION
 Ask for any missing required field one at a time. Do not proceed until all five required fields are known. Check conversation history — never ask for information already provided.
 
 STEP 2 — CHECK AVAILABILITY
-Once all required fields are collected, call check_availability(start_time, duration_minutes).
+Once all required fields are collected, call check_availability(start_time, duration_minutes, buffer_minutes=10).
 - If available: present the slot to the user and ask for explicit confirmation before booking. Example: "I can book your [service] on [date] at [time] for [duration] minutes. Shall I confirm?"
-- If unavailable: call recommend_slots(date, duration_minutes) and present the returned options. Ask the user to pick one or suggest a different day if the list is empty.
+- If unavailable: call recommend_slots(date, duration_minutes, buffer_minutes=10, excluded_times=[<the start_time the user requested>]) and present the returned options. If the user has already tried or mentioned other occupied times in this conversation, include all of them in excluded_times. Ask the user to pick one or suggest a different day if the list is empty.
 
 STEP 3 — BOOK ONLY ON EXPLICIT CONFIRMATION
 Do NOT call book_reservation until the user explicitly says yes, confirms, or approves the slot. A vague reply ("maybe", "let me think") is not confirmation — keep waiting.
@@ -74,7 +75,11 @@ class SchedulingAgent(Agent):
                 history_block = f"<conversation_history>\n{turns}\n</conversation_history>\n\n"
 
         user_message = f"{history_block}User: {ctx.input}"
-        config = dataclasses.replace(DEFAULT_LLM_CONFIG, system_prompt=self._system_prompt)
+
+        _VET = timezone(timedelta(hours=-4))
+        _now = datetime.now(_VET).strftime("%A, %B %-d, %Y, %I:%M %p (VET, UTC-4)")
+        system_prompt = f"{self._system_prompt}\n\nCurrent date and time: {_now}"
+        config = dataclasses.replace(DEFAULT_LLM_CONFIG, system_prompt=system_prompt)
 
         tools = get_tools_for_agent(self._tool_names)
         base_dispatcher = make_dispatcher_for_agent(self._tool_names)

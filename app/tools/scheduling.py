@@ -74,47 +74,79 @@ def _count_overlaps(cur, start: datetime, end: datetime) -> int:
 # Public tool functions
 # ---------------------------------------------------------------------------
 
-def check_availability(start_time: str, duration_minutes: int) -> dict:
-    """Return {available: bool, conflicts: int} for the requested slot."""
+def check_availability(
+    start_time: str,
+    duration_minutes: int,
+    buffer_minutes: int = 0,
+) -> dict:
+    """Return {available: bool, conflicts: int} for the requested slot.
+
+    buffer_minutes adds a required gap before and after the slot so that
+    back-to-back reservations are separated by at least that many minutes.
+    """
     _ensure_table_once()
     if duration_minutes <= 0:
         raise ValueError("duration_minutes must be positive.")
+    if buffer_minutes < 0:
+        raise ValueError("buffer_minutes must be non-negative.")
     start = _parse_iso(start_time)
     if start <= datetime.now(tz=start.tzinfo):
         raise ValueError("Cannot book a slot in the past.")
     end = start + timedelta(minutes=duration_minutes)
 
+    # Expand the checked window by the buffer on both sides
+    buf = timedelta(minutes=buffer_minutes)
     with connection() as conn, conn.cursor() as cur:
-        count = _count_overlaps(cur, start, end)
+        count = _count_overlaps(cur, start - buf, end + buf)
 
     return {"available": count == 0, "conflicts": count}
 
 
-def recommend_slots(date: str, duration_minutes: int) -> dict:
-    """Return {slots: [ISO datetime strings]} — up to 3 available starting times."""
+def recommend_slots(
+    date: str,
+    duration_minutes: int,
+    buffer_minutes: int = 0,
+    excluded_times: list[str] | None = None,
+) -> dict:
+    """Return {slots: [ISO datetime strings]} — up to 3 available starting times.
+
+    buffer_minutes enforces the same gap logic as check_availability.
+    excluded_times is a list of ISO datetimes the user already knows are
+    occupied; when provided, candidates are sorted by proximity to those
+    times so the nearest alternatives are returned first.
+    """
     _ensure_table_once()
     if duration_minutes <= 0:
         raise ValueError("duration_minutes must be positive.")
+    if buffer_minutes < 0:
+        raise ValueError("buffer_minutes must be non-negative.")
 
     tz, biz_start, biz_end = _get_tz_and_hours()
     day = date_type.fromisoformat(date)
+    buf = timedelta(minutes=buffer_minutes)
 
-    # Latest start time that still fits within business hours
     biz_end_dt = datetime.combine(day, biz_end, tzinfo=tz)
     latest_start = biz_end_dt - timedelta(minutes=duration_minutes)
 
-    # Walk hourly from biz_start
     cursor_dt = datetime.combine(day, biz_start, tzinfo=tz)
-    slots: list[str] = []
+    candidates: list[datetime] = []
 
     with connection() as conn, conn.cursor() as cur:
-        while cursor_dt <= latest_start and len(slots) < 3:
+        while cursor_dt <= latest_start:
             end = cursor_dt + timedelta(minutes=duration_minutes)
-            if _count_overlaps(cur, cursor_dt, end) == 0:
-                slots.append(cursor_dt.isoformat())
+            if _count_overlaps(cur, cursor_dt - buf, end + buf) == 0:
+                candidates.append(cursor_dt)
             cursor_dt += timedelta(hours=1)
 
-    return {"slots": slots}
+    if excluded_times:
+        parsed_excluded = [_parse_iso(t) for t in excluded_times]
+
+        def _proximity(dt: datetime) -> timedelta:
+            return min(abs(dt - ex) for ex in parsed_excluded)
+
+        candidates.sort(key=_proximity)
+
+    return {"slots": [c.isoformat() for c in candidates[:3]]}
 
 
 def book_reservation(
@@ -208,6 +240,13 @@ CHECK_AVAILABILITY_TOOL = to_openai_tool(
                 "type": "integer",
                 "description": "Duration of the reservation in minutes.",
             },
+            "buffer_minutes": {
+                "type": "integer",
+                "description": (
+                    "Minimum gap in minutes required before and after this slot "
+                    "so it does not crowd adjacent reservations. Defaults to 0."
+                ),
+            },
         },
         "required": ["start_time", "duration_minutes"],
     },
@@ -217,7 +256,9 @@ RECOMMEND_SLOTS_TOOL = to_openai_tool(
     name="recommend_slots",
     description=(
         "Return up to 3 available starting times on a given day for a given duration. "
-        "Call when the user's requested slot is unavailable."
+        "Call when the user's requested slot is unavailable. "
+        "Pass excluded_times with any times the user already mentioned as occupied — "
+        "the returned slots will be sorted nearest to those times first."
     ),
     parameters={
         "type": "object",
@@ -229,6 +270,22 @@ RECOMMEND_SLOTS_TOOL = to_openai_tool(
             "duration_minutes": {
                 "type": "integer",
                 "description": "Duration of the reservation in minutes.",
+            },
+            "buffer_minutes": {
+                "type": "integer",
+                "description": (
+                    "Minimum gap in minutes required before and after each candidate slot. "
+                    "Use the same value as check_availability. Defaults to 0."
+                ),
+            },
+            "excluded_times": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "ISO 8601 datetimes the user has already tried or stated as occupied. "
+                    "Candidates are sorted by proximity to these times so the nearest "
+                    "alternatives appear first."
+                ),
             },
         },
         "required": ["date", "duration_minutes"],
