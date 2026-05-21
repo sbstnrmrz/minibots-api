@@ -20,6 +20,8 @@ dependencies = [
     "python-socketio>=5.16.1",
     "slowapi>=0.1.9",
     "sqlalchemy>=2.0.49",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
 ]
 
 [dependency-groups]

@@ -3,6 +3,14 @@ from typing import Any, Callable
 
 from app.tools.calculator import CALCULATOR_TOOL, calculate
 from app.tools.row_lookup import ROW_LOOKUP_TOOL, lookup_rows
+from app.tools.scheduling import (
+    CHECK_AVAILABILITY_TOOL,
+    RECOMMEND_SLOTS_TOOL,
+    BOOK_RESERVATION_TOOL,
+    check_availability,
+    recommend_slots,
+    book_reservation,
+)
 from app.tools.sheets_lookup import SHEETS_LOOKUP_TOOL, fetch_google_sheet
 
 
@@ -16,6 +24,9 @@ TOOL_REGISTRY: dict[str, ToolEntry] = {
     "calculator": ToolEntry(declaration=CALCULATOR_TOOL, fn=calculate),
     "csv_lookup": ToolEntry(declaration=ROW_LOOKUP_TOOL, fn=lookup_rows),
     "sheets_lookup": ToolEntry(declaration=SHEETS_LOOKUP_TOOL, fn=fetch_google_sheet),
+    "check_availability": ToolEntry(declaration=CHECK_AVAILABILITY_TOOL, fn=check_availability),
+    "recommend_slots": ToolEntry(declaration=RECOMMEND_SLOTS_TOOL, fn=recommend_slots),
+    "book_reservation": ToolEntry(declaration=BOOK_RESERVATION_TOOL, fn=book_reservation),
 }
 
 ALL_TOOLS = [entry.declaration for entry in TOOL_REGISTRY.values()]
@@ -78,4 +89,10 @@ __all__ = [
     "CALCULATOR_TOOL",
     "fetch_google_sheet",
     "SHEETS_LOOKUP_TOOL",
+    "check_availability",
+    "CHECK_AVAILABILITY_TOOL",
+    "recommend_slots",
+    "RECOMMEND_SLOTS_TOOL",
+    "book_reservation",
+    "BOOK_RESERVATION_TOOL",
 ]

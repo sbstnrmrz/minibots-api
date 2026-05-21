@@ -91,6 +91,15 @@ def _build_agent(
             tool_names=tool_names,
         )
 
+    if agent_type == "scheduler":
+        from app.agents.scheduling_agent import SchedulingAgent, SCHEDULING_SYSTEM_PROMPT
+        base_prompt = agent_config.system_prompt or SCHEDULING_SYSTEM_PROMPT
+        return SchedulingAgent(
+            system_prompt=base_prompt,
+            tool_names=tool_names or None,
+            tenant_id=config.get("tenant_id"),
+        )
+
     raise ValueError(f"Unknown agent_type: '{agent_type}'")
 
 
