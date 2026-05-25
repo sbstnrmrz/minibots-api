@@ -21,6 +21,7 @@ from app import models
 from app.agents.business_analyzer_agent import BusinessAnalyzerAgent
 from app.auth import require_api_key
 from app.database import SessionLocal, get_db
+from llm.usage import get_calls, start_tracking
 from app.config import (
     ALLOWED_UPLOAD_SUFFIXES,
     GARAGE_BUCKET,
@@ -158,7 +159,8 @@ class SetupPayload(BaseModel):
 @router.post("/analyze")
 async def analyze(
     payload: str = Form(...),
-    _current_tenant: models.Tenant = Depends(require_api_key),
+    current_tenant: models.Tenant = Depends(require_api_key),
+    db: Session = Depends(get_db),
 ):
     """Score the setup payload with BusinessAnalyzerAgent. No data is saved.
 
@@ -182,8 +184,23 @@ async def analyze(
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    start_tracking()
     agent = BusinessAnalyzerAgent()
     report: str = await asyncio.to_thread(agent.run, json.dumps(raw))
+
+    # Persist usage (no bot_id / chat_id — standalone analysis call)
+    for c in get_calls():
+        db.add(models.LLMCall(
+            tenant_id=current_tenant.id,
+            agent_name=c.agent_name,
+            provider=c.provider,
+            model=c.model,
+            prompt_tokens=c.prompt_tokens,
+            completion_tokens=c.completion_tokens,
+            total_tokens=c.total_tokens,
+            cost_usd=c.cost_usd,
+        ))
+    db.commit()
 
     # Extract overall_score from scorer directly (no second LLM call)
     from app.agents.business_analyzer_agent import CompletenessScorer
