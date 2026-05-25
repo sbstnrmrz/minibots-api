@@ -125,7 +125,8 @@ class Chat(Base):
     __tablename__ = "chats"
 
     id = Column(String, primary_key=True)
-    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)   # nullable: tenant-default chats have no bot
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -133,7 +134,8 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, index=True)
-    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)   # nullable: tenant-default chats have no bot
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
     role = Column(String, nullable=False)  # "user" or "model"
     content = Column(String, nullable=False)

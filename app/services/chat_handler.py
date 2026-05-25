@@ -51,9 +51,15 @@ async def handle_chat_turn(
 
     Reads bot config + history, picks the dispatch path (workflow,
     legacy RAG, generic RAG, tenant-default RAG, plain reply), persists
-    both messages, and returns the reply text.
+    both messages (user + model), and returns the reply text.
+
+    Persistence works for two flows:
+    - Bot flow (bot_id set): chat + messages scoped to the bot.
+    - Tenant-default flow (bot_id None): chat + messages scoped to the
+      tenant's default AgentConfig. bot_id is NULL on those rows.
     """
     start_tracking()
+    tenant_uuid = _uuid_mod.UUID(str(tenant_id))
 
     bot_type: str | None = None
     history: list[dict] = []
@@ -61,8 +67,8 @@ async def handle_chat_turn(
     rag_namespace: str | None = None
     pipeline: Pipeline | None = None
 
-    if bot_id:
-        with db_context() as db:
+    with db_context() as db:
+        if bot_id:
             bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
             if bot:
                 bot_type = bot.bot_type
@@ -72,11 +78,10 @@ async def handle_chat_turn(
                 if chat_id:
                     db.execute(
                         pg_insert(models.Chat.__table__)
-                        .values(id=chat_id, bot_id=bot_id)
+                        .values(id=chat_id, bot_id=bot_id, tenant_id=tenant_uuid)
                         .on_conflict_do_nothing(index_elements=["id"])
                     )
                     db.commit()
-
                     past = (
                         db.query(models.ChatMessage)
                         .filter(models.ChatMessage.chat_id == chat_id)
@@ -91,11 +96,6 @@ async def handle_chat_turn(
                         .all()
                     )
 
-                history = [
-                    {"role": m.role, "parts": [{"text": m.content}]}
-                    for m in past
-                ]
-
                 if bot_type == "vendedor" and spreadsheet_id:
                     sheet_data = await fetch_sheet(spreadsheet_id)
                     if sheet_data:
@@ -103,16 +103,42 @@ async def handle_chat_turn(
 
                 rag_namespace = await asyncio.to_thread(get_namespace, "bot", bot_id)
 
-                db.add(models.ChatMessage(
-                    bot_id=bot_id,
-                    chat_id=chat_id,
-                    role="user",
-                    content=message,
-                ))
-                db.commit()
-
                 if workflow_id:
                     pipeline = build_pipeline(workflow_id, db)
+
+        else:
+            # Tenant-default flow: load history by chat_id only
+            if chat_id:
+                db.execute(
+                    pg_insert(models.Chat.__table__)
+                    .values(id=chat_id, bot_id=None, tenant_id=tenant_uuid)
+                    .on_conflict_do_nothing(index_elements=["id"])
+                )
+                db.commit()
+                past = (
+                    db.query(models.ChatMessage)
+                    .filter(models.ChatMessage.chat_id == chat_id)
+                    .order_by(models.ChatMessage.created_at)
+                    .all()
+                )
+            else:
+                past = []
+
+        history = [
+            {"role": m.role, "parts": [{"text": m.content}]}
+            for m in past
+        ]
+
+        # Save user message (always, as long as we have somewhere to scope it)
+        if bot_id or chat_id:
+            db.add(models.ChatMessage(
+                bot_id=bot_id,
+                tenant_id=tenant_uuid,
+                chat_id=chat_id,
+                role="user",
+                content=message,
+            ))
+            db.commit()
 
     contents = history + [{"role": "user", "parts": [{"text": user_content}]}]
 
@@ -146,7 +172,8 @@ async def handle_chat_turn(
     else:
         reply = await generate_reply(contents)
 
-    if bot_id:
+    # Save model reply — always when we have scope to attach it to
+    if bot_id or chat_id:
         with db_context() as db:
             usage_calls = get_calls()
             total_prompt = sum(c.prompt_tokens for c in usage_calls)
@@ -156,6 +183,7 @@ async def handle_chat_turn(
 
             model_msg = models.ChatMessage(
                 bot_id=bot_id,
+                tenant_id=tenant_uuid,
                 chat_id=chat_id,
                 role="model",
                 content=reply,
@@ -165,13 +193,11 @@ async def handle_chat_turn(
                 cost_usd=total_cost,
             )
             db.add(model_msg)
-            db.commit()  # commit message first — usage is secondary
+            db.commit()
 
-            # Persist token usage records. Failures here must not roll back
-            # the already-committed ChatMessage.
+            # Persist token usage. Failures must not roll back the ChatMessage.
             if usage_calls:
                 try:
-                    tenant_uuid = _uuid_mod.UUID(str(tenant_id))
                     for c in usage_calls:
                         db.add(models.LLMCall(
                             tenant_id=tenant_uuid,

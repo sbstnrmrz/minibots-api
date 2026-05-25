@@ -146,6 +146,26 @@ with engine.connect() as conn:
             DROP COLUMN IF EXISTS documents_urls;
     """))
 
+    # --- no-bot (tenant-default) chat persistence ---
+    # Make bot_id nullable on chats and chat_messages so tenant-default
+    # agent flows (no explicit bot) can persist their conversations.
+    conn.execute(text("""
+        ALTER TABLE chats
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+    """))
+    conn.execute(text("""
+        ALTER TABLE chats
+            ALTER COLUMN bot_id DROP NOT NULL;
+    """))
+    conn.execute(text("""
+        ALTER TABLE chat_messages
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+    """))
+    conn.execute(text("""
+        ALTER TABLE chat_messages
+            ALTER COLUMN bot_id DROP NOT NULL;
+    """))
+
     # --- token usage tracking ---
     conn.execute(text("""
         ALTER TABLE chat_messages
