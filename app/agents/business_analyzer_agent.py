@@ -29,9 +29,13 @@ DEFAULT_ANALYZER_CONFIG = LLMConfig(
 _WEAK_THRESHOLD = 20
 
 # FAQ answers carry the most weight, so they're held to a higher bar.
-_FAQ_ANSWER_THRESHOLD = 40  # min chars for an FAQ answer to count as "detailed"
+# 80 chars ≈ one full sentence with context — "Sí", "No, pero..." style answers don't pass.
+_FAQ_ANSWER_THRESHOLD = 80  # min chars for an FAQ answer to count as "detailed"
 _FAQ_TARGET = 10  # detailed FAQs needed for a full FAQ category score
 _FAQ_FLOOR = 3   # below this many detailed FAQs, FAQs are a critical gap regardless of %
+# Weak-to-total ratio above this triggers a quality penalty on the FAQ category score.
+# Each point of weak ratio reduces the score by 0.5× that fraction (max 50% penalty at 100% weak).
+_FAQ_QUALITY_PENALTY_FACTOR = 0.5
 
 # Plain-English names for every scored field — used in the report and gap lists.
 _FIELD_LABELS: dict[str, str] = {
@@ -173,7 +177,22 @@ class CompletenessScorer:
                 detailed_faqs += 1
             else:
                 weak_faqs += 1
-        faqs_score = round(min(detailed_faqs / _FAQ_TARGET, 1.0) * 100)
+
+        # Quality-weighted FAQ score:
+        # - Detailed entries = 1.0, weak entries = 0.5 (present but insufficient)
+        # - High weak-to-total ratio applies an additional quality penalty
+        #   (e.g. 32% weak → 16% penalty; 50% weak → 25% penalty)
+        # This means having 40 FAQs but 13 weak ones cannot score 100%.
+        total_valid_faqs = detailed_faqs + weak_faqs
+        if total_valid_faqs > 0:
+            effective_faqs = detailed_faqs + weak_faqs * 0.5
+            quantity_ratio = min(effective_faqs / _FAQ_TARGET, 1.0)
+            weak_ratio = weak_faqs / total_valid_faqs
+            quality_factor = 1.0 - (weak_ratio * _FAQ_QUALITY_PENALTY_FACTOR)
+            faqs_score = round(quantity_ratio * quality_factor * 100)
+        else:
+            faqs_score = 0
+
         if faq:
             present.append(_FIELD_LABELS["faq"])
         else:
@@ -186,11 +205,15 @@ class CompletenessScorer:
         elif detailed_faqs < _FAQ_TARGET:
             faqs_missing.append(
                 f"only {detailed_faqs} of your {len(faq)} FAQ entries have a "
-                f"detailed answer; aim for {_FAQ_TARGET} detailed entries"
+                f"detailed answer (≥{_FAQ_ANSWER_THRESHOLD} chars); "
+                f"aim for {_FAQ_TARGET} detailed entries"
             )
-        if weak_faqs:
+        if weak_faqs and total_valid_faqs > 0:
+            weak_pct = round(weak_faqs / total_valid_faqs * 100)
             faqs_missing.append(
-                f"{weak_faqs} FAQ entry(ies) with a too-brief answer or a missing question"
+                f"{weak_faqs} of {total_valid_faqs} FAQ entries ({weak_pct}%) have answers "
+                f"under {_FAQ_ANSWER_THRESHOLD} characters — each needs at least 2–3 full "
+                f"sentences with real details (conditions, timelines, examples)"
             )
 
         # --- Policies & Detail: additional_info free-text field ---
@@ -265,6 +288,10 @@ class CompletenessScorer:
             "present_fields": present,
             "empty_fields": empty,
             "weak_fields": weak,
+            # Expose raw FAQ counts so callers can populate faq_coverage without
+            # re-computing them (not shown in the UI but used by BusinessAnalyzerAgent).
+            "_detailed_faqs": detailed_faqs,
+            "_weak_faqs": weak_faqs,
         }
 
 
@@ -314,110 +341,151 @@ def _missing(keys: list[str], overrides: dict, general: dict, contact: dict) -> 
     return out
 
 
-BUSINESS_ANALYZER_SYSTEM_PROMPT = """Role: You are a Chatbot Readiness Analyst. Your job is to evaluate business information submitted through a chatbot creation form and produce a clear, actionable report for the business owner.
+BUSINESS_ANALYZER_SYSTEM_PROMPT = """Role: You are a Chatbot Readiness Analyst. Evaluate business information from a chatbot creation form and return a STRUCTURED JSON REPORT — no prose, no markdown, no extra text.
 
-**ABSOLUTE LANGUAGE RULE — READ FIRST, OVERRIDES EVERYTHING BELOW:**
-Before writing anything, inspect the `present_fields` labels and any free-text values inside the scoring result to detect the language the business owner wrote the form in (typically Spanish or English).
-- If the form is in Spanish → the ENTIRE report (every heading, every sentence, every example FAQ) MUST be in Spanish.
-- If the form is in English → the ENTIRE report MUST be in English.
-- Never mix languages. Never default to English. The English headings shown below are templates — translate them.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT — MANDATORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Return ONLY a single JSON object. No ```json fences, no leading text, no trailing text.
+Schema (all string values in the detected form language):
 
-You will receive a structured scoring result from an automated analyzer. Your job is to translate that into a human-readable report.
+{
+  "overall_summary": "<1–2 sentences interpreting the score — honest, encouraging>",
+  "language": "<Spanish | English>",
+  "business_type": "<specific classification, e.g. 'pediatric dental clinic'>",
+  "category_summaries": {
+    "business_identity": "<1 sentence on what is good or missing>",
+    "products_and_services": "<1 sentence>",
+    "faqs": "<1 sentence>",
+    "policies_and_detail": "<1 sentence>",
+    "contact_and_reach": "<1 sentence>"
+  },
+  "critical_gaps": [
+    {
+      "category": "<category key>",
+      "label": "<human label in form language>",
+      "missing_info": "<what information is absent>",
+      "blocked_questions": ["<customer question 1>", "<customer question 2>", "<customer question 3>"],
+      "example_answer": "<concrete example of a complete answer for THIS business type>"
+    }
+  ],
+  "weak_fields": [
+    {
+      "field": "<plain-English field name>",
+      "issue": "<why this is too brief>",
+      "example_improvement": "<realistic example of a complete value for THIS business>"
+    }
+  ],
+  "faq_coverage": {
+    "missing_questions": [
+      {
+        "question": "<customer question this business would actually receive>",
+        "example_answer": "<complete 2–3 sentence answer specific to this business>"
+      }
+    ]
+  },
+  "chatbot_potential": "<vivid paragraph: what a fully-informed chatbot would handle — real scenarios, real questions, real time saved>",
+  "next_steps": [
+    {
+      "priority": 1,
+      "action": "<concrete, specific action — not 'add more FAQs' but 'add 7 FAQs covering X, Y, Z with answers of 2–3 sentences each'>",
+      "impact": "<why this is the most impactful change>"
+    }
+  ]
+}
+
+Rules for `critical_gaps`: include one entry per category where score < 50, plus `faqs` when detailed_count < floor (even if score ≥ 50). Empty array if no gaps.
+Rules for `weak_fields`: one entry per field the scorer flagged as weak. Empty array if none.
+Rules for `faq_coverage.missing_questions`: always 5–8 items regardless of FAQ score.
+Rules for `next_steps`: exactly 3 items, ordered by impact descending.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ABSOLUTE LANGUAGE RULE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every string value in the JSON MUST be in the language the form was written in (Spanish or English). Never mix languages. Never default to English. The `language` field must match.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BUSINESS TYPE ADAPTATION — MANDATORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — IDENTIFY BUSINESS TYPE
+Classify into the most specific type possible (e.g. "pediatric dental clinic", "artisan shoe store", "B2B SaaS accounting tool", "personal injury law firm", "cloud kitchen"). Set `business_type` to this.
+
+STEP 2 — ZERO TOLERANCE FOR GENERIC EXAMPLES
+NEVER write a generic e-commerce example when you know the business type. If the business is a dermatology clinic, every FAQ example MUST be about skin treatments, procedures, or insurance — never about "free returns within 30 days." Apply this rule to every `blocked_questions`, `example_answer`, `example_improvement`, and `missing_questions` entry.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WHAT "CHATBOT READINESS" ACTUALLY MEANS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-A chatbot can only answer questions that are covered by the business information it was trained on. The more complete and specific that information is, the more questions the chatbot can handle accurately without making things up or saying "I don't know."
+A chatbot can only answer questions covered by the business information it was trained on. Evaluate the form against the real questions customers ask every day across 10 areas:
 
-When evaluating the form, mentally test it against the real questions customers ask every day. Group those questions into 10 areas — the chatbot needs enough information to handle all of them:
-
-1. BUSINESS IDENTITY — "What is this company? What do they do? Where are they?"
-   Examples: What is your company's name and what do you do? Where are you located? How long have you been in business? What makes you different from competitors?
-
-2. PRODUCTS & SERVICES — "What can I buy or contract? What do you offer exactly?"
-   Examples: What products/services do you offer? What are your most popular ones? Do you have packages or bundles? Do you offer customization? Who is your typical customer?
-
-3. PRICING & PAYMENTS — "How much does it cost? How can I pay?"
-   Examples: What are your prices? Do you have different plans or tiers? What payment methods do you accept? Do you offer financing or installments? Are there discounts?
-
-4. ORDERING & PURCHASE — "How do I buy? What happens when I place an order?"
-   Examples: How do I place an order? Can I order online? Can I modify or cancel after ordering? What if an item is out of stock? How do I apply a coupon?
-
+1. BUSINESS IDENTITY — "What is this company? Where are they? What makes them different?"
+2. PRODUCTS & SERVICES — "What can I buy or contract? What are the most popular offerings?"
+3. PRICING & PAYMENTS — "How much does it cost? What payment methods are accepted?"
+4. ORDERING & PURCHASE — "How do I buy? Can I cancel or modify after ordering?"
 5. SHIPPING & DELIVERY — "How does it arrive? How long will it take?"
-   Examples: What are your shipping costs? How long does delivery take? Do you ship internationally? How do I track my order? Do you offer same-day delivery?
-
 6. RETURNS, REFUNDS & WARRANTIES — "What if something goes wrong?"
-   Examples: What is your return policy? How do I request a refund? What if I receive a damaged item? Do you offer warranties? Who pays for return shipping?
-
 7. PRODUCT/SERVICE DETAILS — "Tell me more about this specific thing."
-   Examples: What materials are used? Is it safe for children/pets? What sizes or variants are available? How long does the service take? What is included?
-
-8. CUSTOMER SUPPORT & ACCOUNT — "How do I get help? How do I manage my account?"
-   Examples: How do I contact support? What are your support hours? Do you have live chat? How do I reset my password? How do I cancel my subscription?
-
+8. CUSTOMER SUPPORT & ACCOUNT — "How do I get help? What are support hours?"
 9. POLICIES & TRUST — "Can I trust you? How do you handle my data?"
-   Examples: What is your privacy policy? Is my payment information secure? Do you have customer reviews? Are you certified or accredited? How do you handle complaints?
+10. AFTER-SALE & ONGOING — "What happens after I buy? Is training included?"
 
-10. AFTER-SALE & ONGOING — "What happens after I buy?"
-    Examples: Do you offer maintenance plans? Is there training included? Can I request revisions? How do I renew or upgrade? Do you have a referral program?
-
-The scoring result shows how well the submitted information covers these areas. Your job is to explain that to the business owner clearly and motivate them to fill the gaps.
+Remap these to the detected business type: "Ordering & Purchase" → "Booking/Appointments" for a clinic; "Shipping & Delivery" → "Delivery Zones & Times" for food; etc.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REPORT STRUCTURE
+FAQ QUALITY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Output exactly in this order. The headings below are shown in English; translate each heading into the form's language:
-
-1. OVERALL READINESS SCORE: [score]%
-   [One sentence interpreting what the score means in plain terms. Be honest but encouraging.]
-
-2. CATEGORY BREAKDOWN
-   For each of the 5 scored categories, one line: [Category Name]: [score]% — [one sentence on what is good or what is missing, referencing the real-world customer questions it enables or blocks]
-
-3. CRITICAL GAPS (only if any category is below 50%)
-   A prioritized list of what is most urgently needed. For each gap explain:
-   - What information is missing
-   - Which customer questions the chatbot CANNOT answer without it (use plain examples from the 10 areas above)
-   - A concrete example of what a complete answer looks like
-
-4. WEAK FIELDS
-   Fields that were submitted but are too brief to be useful. For each one, explain what a complete, specific answer looks like — use a realistic example.
-
-5. FAQ COVERAGE ANALYSIS
-   This section is always shown, regardless of FAQ score.
-   - State the detailed-FAQ count vs. the 10-entry target (e.g. "3 of 10 detailed FAQs submitted").
-   - List 5–8 example customer questions that the chatbot CANNOT yet answer based on the current FAQs — pick the most common and impactful ones from the 10 areas above.
-   - For each missing question, give an example of what a good FAQ answer would look like so the owner understands the level of detail expected.
-   - If FAQs are a critical gap, this section must appear BEFORE section 3.
-
-6. WHAT YOUR CHATBOT WILL BE ABLE TO DO AT 100%
-   A vivid, specific paragraph describing what a fully-informed chatbot would handle for this business — real scenarios, real customer questions answered, real time saved. Make the owner feel the value.
-
-7. NEXT STEPS
-   A numbered list of the 3 most impactful things the business owner should add or expand right now, ordered by impact on chatbot quality. Be concrete: don't say "add more FAQs", say "add at least 7 more FAQ entries covering pricing, returns, and delivery with answers of at least 2–3 sentences each."
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FAQ PRIORITY RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- FAQs are the single highest-impact input. A chatbot lives or dies by its FAQs.
-- A good FAQ entry = a clear, specific customer question + a complete answer of at least 2–3 sentences with real details (prices, timelines, conditions, examples).
-- A bad FAQ answer: "We offer good service." — too vague, the chatbot cannot use it.
-- A good FAQ answer: "We offer free returns within 30 days of purchase. Simply contact us at support@company.com and we will email you a prepaid shipping label within 24 hours. Refunds are processed to the original payment method in 5–7 business days."
-- If FAQs are a critical gap, the FAQ Coverage Analysis section moves BEFORE the Critical Gaps section and is expanded with more missing-question examples.
+- A good FAQ = clear specific question + answer of at least 2–3 full sentences with real details (prices, timelines, conditions, examples).
+- A bad FAQ answer: "We offer good service." — too vague.
+- Every `example_answer` you write in `missing_questions` and `critical_gaps` must match this standard and be specific to the detected business type.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONSTRAINTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Write in clear, friendly, non-technical language — the reader is a business owner, not a developer
-- NEVER mention RAG, embeddings, vectors, tokens, similarity search, or any internal system terms
-- Be specific: reference the actual missing fields by their plain-English names
-- Be encouraging but honest — a 40% score should feel like an opportunity, not a failure
-- Every example FAQ you generate must sound like a real question this specific business would receive, not a generic placeholder
-- Write the entire report — headings included — in the same language the form data is written in"""
+- NEVER mention RAG, embeddings, vectors, tokens, similarity search, or any internal system terms.
+- Write for a business owner, not a developer.
+- Be encouraging but honest."""
+
+
+# Human-readable category labels for the structured output.
+_CATEGORY_LABELS: dict[str, str] = {
+    "business_identity": "Business Identity",
+    "products_and_services": "Products & Services",
+    "faqs": "FAQs & Common Queries",
+    "policies_and_detail": "Policies & Detail",
+    "contact_and_reach": "Contact & Reach",
+}
+
+
+def _safe_parse_llm_json(raw: str) -> dict | None:
+    """Strip markdown fences and parse JSON, with auto-repair fallback.
+
+    Models occasionally emit structurally broken JSON (spurious brackets,
+    trailing commas, etc.) despite explicit instructions. `json_repair` fixes
+    the most common patterns before we give up.
+    """
+    from json_repair import repair_json  # lazy import — only used here
+
+    text = raw.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences the model may add despite instructions.
+    if text.startswith("```"):
+        lines = text.splitlines()
+        inner = lines[1:] if lines[0].startswith("```") else lines
+        if inner and inner[-1].strip() == "```":
+            inner = inner[:-1]
+        text = "\n".join(inner).strip()
+    # First try strict parse; fall back to repair if it fails.
+    for candidate in (text, repair_json(text)):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return None
 
 
 class BusinessAnalyzerAgent(Agent):
-    """Pipeline agent: business form (JSON string) → readiness report out."""
+    """Pipeline agent: business form (JSON string) → structured JSON report out."""
 
     def __init__(self, llm_config: LLMConfig | None = None) -> None:
         super().__init__()
@@ -429,6 +497,11 @@ class BusinessAnalyzerAgent(Agent):
         Returns the report in the same shape it was given: AgentContext in →
         AgentContext out, str in → str out. See `_resolve_form` for the
         accepted JSON input shapes.
+
+        Output is always a JSON string whose top-level keys are:
+          overall_score, overall_summary, language, business_type,
+          categories, critical_gaps, weak_fields, faq_coverage,
+          chatbot_potential, next_steps
         """
         raw = ctx.input if isinstance(ctx, AgentContext) else ctx
         report = self._analyze(raw)
@@ -465,16 +538,23 @@ class BusinessAnalyzerAgent(Agent):
                 raise ValueError("Input JSON must be an object.")
 
             form_data = self._resolve_form(payload)
-            result = CompletenessScorer().score(form_data)
+            scorer_result = CompletenessScorer().score(form_data)
             language = _detect_form_language(form_data)
 
-            scoring_block = json.dumps(result, indent=2, ensure_ascii=False)
+            # Build the user message — scorer numbers are authoritative; the LLM
+            # only generates textual content (summaries, examples, next steps).
+            scoring_block = json.dumps(scorer_result, indent=2, ensure_ascii=False)
+            form_block = json.dumps(form_data, indent=2, ensure_ascii=False)
             user_message = (
                 f"LANGUAGE DETECTED FROM FORM: {language}. "
-                f"Write the ENTIRE report (headings included) in {language}.\n\n"
-                "Here is the automated scoring result for a chatbot creation "
-                "form. Produce the readiness report.\n\n"
-                f"```json\n{scoring_block}\n```"
+                f"Every string value in the JSON MUST be in {language}.\n\n"
+                "## RAW FORM DATA\n\n"
+                f"```json\n{form_block}\n```\n\n"
+                "## AUTOMATED SCORING RESULT\n"
+                "(Use scores and gap lists from here verbatim — do NOT invent numbers.)\n\n"
+                f"```json\n{scoring_block}\n```\n\n"
+                "Return ONLY the JSON object described in the system prompt. "
+                "No markdown fences, no extra text."
             )
 
             config = dataclasses.replace(
@@ -482,6 +562,55 @@ class BusinessAnalyzerAgent(Agent):
                 system_prompt=BUSINESS_ANALYZER_SYSTEM_PROMPT,
             )
             set_agent("BusinessAnalyzerAgent")
-            return call_llm(config, [{"role": "user", "content": user_message}])
+            llm_raw = call_llm(config, [{"role": "user", "content": user_message}])
+
+            # Parse LLM output and merge with authoritative scorer numbers.
+            llm_data = _safe_parse_llm_json(llm_raw)
+            if llm_data is None:
+                # LLM ignored JSON instructions — fall back to wrapping the raw text.
+                return json.dumps(
+                    {"error": "LLM returned non-JSON output", "raw_report": llm_raw},
+                    ensure_ascii=False,
+                )
+
+            # Build authoritative categories, injecting LLM summaries where available.
+            llm_summaries: dict = llm_data.get("category_summaries") or {}
+            categories_out: dict = {}
+            for key, cat in scorer_result["categories"].items():
+                categories_out[key] = {
+                    "score": cat["score"],
+                    "weight": cat["weight"],
+                    "label": _CATEGORY_LABELS.get(key, key),
+                    "summary": llm_summaries.get(key, ""),
+                    "missing": cat["missing"],
+                }
+
+            # faq_coverage: numeric fields from scorer, missing_questions from LLM.
+            faq_llm: dict = llm_data.get("faq_coverage") or {}
+            faq_coverage_out = {
+                "detailed_count": scorer_result.get("_detailed_faqs", 0),
+                "weak_count": scorer_result.get("_weak_faqs", 0),
+                "target": _FAQ_TARGET,
+                "missing_questions": faq_llm.get("missing_questions") or [],
+            }
+
+            report = {
+                "overall_score": scorer_result["overall_score"],
+                "overall_summary": llm_data.get("overall_summary", ""),
+                "language": llm_data.get("language", language),
+                "business_type": llm_data.get("business_type", ""),
+                "categories": categories_out,
+                "critical_gaps": llm_data.get("critical_gaps") or [],
+                "weak_fields": llm_data.get("weak_fields") or [],
+                "faq_coverage": faq_coverage_out,
+                "chatbot_potential": llm_data.get("chatbot_potential", ""),
+                "next_steps": llm_data.get("next_steps") or [],
+                # Raw field-level lists for debugging / alternative UI display.
+                "present_fields": scorer_result["present_fields"],
+                "empty_fields": scorer_result["empty_fields"],
+                "weak_field_names": scorer_result["weak_fields"],
+                "critical_gap_keys": scorer_result["critical_gaps"],
+            }
+            return json.dumps(report, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
