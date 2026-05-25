@@ -13,7 +13,7 @@ import tomllib
 from pathlib import Path
 
 from app.agents.base import Agent, AgentContext
-from llm import LLMConfig, LLMProvider, call_llm
+from llm import LLMConfig, LLMProvider, call_llm, set_agent
 
 # Default model — the analyst report benefits from the stronger "pro" model.
 # max_tokens is generous: the pro model spends tokens on reasoning before the
@@ -481,6 +481,7 @@ class BusinessAnalyzerAgent(Agent):
                 self._llm_config,
                 system_prompt=BUSINESS_ANALYZER_SYSTEM_PROMPT,
             )
+            set_agent("BusinessAnalyzerAgent")
             return call_llm(config, [{"role": "user", "content": user_message}])
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)

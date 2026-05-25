@@ -38,6 +38,9 @@ from typing import Any, Callable
 import openai
 from dotenv import load_dotenv
 
+from llm.pricing import compute_cost
+from llm.usage import LLMCallRecord, get_current_agent, record as _record_usage
+
 load_dotenv()
 
 logger = logging.getLogger("llm")
@@ -187,6 +190,21 @@ def call_llm(
                 f"[{config.provider.value}] LLM call failed: {e}"
             ) from e
 
+        if res.usage:
+            u = res.usage
+            _record_usage(LLMCallRecord(
+                provider=config.provider.value,
+                model=config.model,
+                prompt_tokens=u.prompt_tokens,
+                completion_tokens=u.completion_tokens,
+                total_tokens=u.total_tokens,
+                cost_usd=compute_cost(
+                    config.provider.value, config.model,
+                    u.prompt_tokens, u.completion_tokens,
+                ),
+                agent_name=get_current_agent(),
+            ))
+
         choice = res.choices[0]
         tool_calls = choice.message.tool_calls
 
@@ -266,6 +284,21 @@ async def acall_llm(
             raise RuntimeError(
                 f"[{config.provider.value}] LLM call failed: {e}"
             ) from e
+
+        if res.usage:
+            u = res.usage
+            _record_usage(LLMCallRecord(
+                provider=config.provider.value,
+                model=config.model,
+                prompt_tokens=u.prompt_tokens,
+                completion_tokens=u.completion_tokens,
+                total_tokens=u.total_tokens,
+                cost_usd=compute_cost(
+                    config.provider.value, config.model,
+                    u.prompt_tokens, u.completion_tokens,
+                ),
+                agent_name=get_current_agent(),
+            ))
 
         choice = res.choices[0]
         tool_calls = choice.message.tool_calls

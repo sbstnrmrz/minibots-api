@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 import enum
 import uuid
@@ -137,4 +137,28 @@ class ChatMessage(Base):
     chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
     role = Column(String, nullable=False)  # "user" or "model"
     content = Column(String, nullable=False)
+    # Aggregated token totals for model-role rows (sum across all LLM calls in the turn)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    cost_usd = Column(Numeric(12, 8), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LLMCall(Base):
+    """One row per provider API call. Multiple rows can belong to one chat turn."""
+    __tablename__ = "llm_calls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)
+    chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
+    chat_message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=True)
+    agent_name = Column(String, nullable=True)   # e.g. "RAGInfoAgent", "direct"
+    provider = Column(String, nullable=False)     # e.g. "DEEPSEEK"
+    model = Column(String, nullable=False)
+    prompt_tokens = Column(Integer, nullable=False)
+    completion_tokens = Column(Integer, nullable=False)
+    total_tokens = Column(Integer, nullable=False)
+    cost_usd = Column(Numeric(12, 8), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

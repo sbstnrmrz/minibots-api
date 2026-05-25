@@ -10,7 +10,7 @@ hung provider no longer ties up a worker thread.
 import dataclasses
 from typing import Any, Callable
 
-from llm import DEFAULT_LLM_CONFIG, acall_llm
+from llm import DEFAULT_LLM_CONFIG, acall_llm, set_agent
 
 _ROLE_MAP = {"user": "user", "model": "assistant", "assistant": "assistant"}
 
@@ -39,6 +39,7 @@ async def generate_reply(
         system_prompt=system_prompt or "",
     )
     messages = _to_openai_messages(contents)
+    set_agent("direct")
     return await acall_llm(config, messages)
 
 
@@ -53,4 +54,5 @@ async def generate_with_tools(
         system_prompt=system_prompt or "",
     )
     messages = _to_openai_messages(contents)
+    set_agent("direct")
     return await acall_llm(config, messages, tools, dispatcher)

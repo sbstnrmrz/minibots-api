@@ -18,6 +18,7 @@ from app.agents.rag_info_agent import RAGInfoAgent
 from app.database import db_context
 from app.services.gemini import generate_reply, generate_with_tools
 from app.services.sheets import fetch_sheet
+from llm.usage import get_calls, start_tracking
 from rag.store import (
     get_namespace,
     has_rag_table,
@@ -51,6 +52,8 @@ async def handle_chat_turn(
     legacy RAG, generic RAG, tenant-default RAG, plain reply), persists
     both messages, and returns the reply text.
     """
+    start_tracking()
+
     bot_type: str | None = None
     history: list[dict] = []
     user_content = message
@@ -144,12 +147,40 @@ async def handle_chat_turn(
 
     if bot_id:
         with db_context() as db:
-            db.add(models.ChatMessage(
+            usage_calls = get_calls()
+            total_prompt = sum(c.prompt_tokens for c in usage_calls)
+            total_completion = sum(c.completion_tokens for c in usage_calls)
+            total_tokens = sum(c.total_tokens for c in usage_calls)
+            total_cost = sum(c.cost_usd or 0.0 for c in usage_calls) or None
+
+            model_msg = models.ChatMessage(
                 bot_id=bot_id,
                 chat_id=chat_id,
                 role="model",
                 content=reply,
-            ))
+                prompt_tokens=total_prompt or None,
+                completion_tokens=total_completion or None,
+                total_tokens=total_tokens or None,
+                cost_usd=total_cost,
+            )
+            db.add(model_msg)
+            db.flush()  # populate model_msg.id before referencing it
+
+            for c in usage_calls:
+                db.add(models.LLMCall(
+                    tenant_id=tenant_id,
+                    bot_id=bot_id,
+                    chat_id=chat_id,
+                    chat_message_id=model_msg.id,
+                    agent_name=c.agent_name,
+                    provider=c.provider,
+                    model=c.model,
+                    prompt_tokens=c.prompt_tokens,
+                    completion_tokens=c.completion_tokens,
+                    total_tokens=c.total_tokens,
+                    cost_usd=c.cost_usd,
+                ))
+
             db.commit()
 
     return reply

@@ -6,7 +6,7 @@ from typing import Any
 from app.agents.base import Agent, AgentContext
 from app.agents.memory import MemoryStore
 from app.tools import get_tools_for_agent, make_dispatcher_for_agent
-from llm import DEFAULT_LLM_CONFIG, call_llm
+from llm import DEFAULT_LLM_CONFIG, call_llm, set_agent
 
 logger = logging.getLogger("scheduling_agent")
 
@@ -97,6 +97,7 @@ class SchedulingAgent(Agent):
                 args = {**args, "chat_id": _chat_id, "tenant_id": _tenant_id, "calendar_id": _calendar_id}
             return base_dispatcher(name, args)
 
+        set_agent("SchedulingAgent")
         reply = call_llm(
             config,
             [{"role": "user", "content": user_message}],

@@ -4,7 +4,7 @@ import logging
 from app.agents.base import Agent, AgentContext
 from app.agents.memory import MemoryStore
 from app.tools import get_tools_for_agent, make_dispatcher_for_agent
-from llm import DEFAULT_LLM_CONFIG, call_llm
+from llm import DEFAULT_LLM_CONFIG, call_llm, set_agent
 from rag.store import retrieve
 
 logger = logging.getLogger("rag")
@@ -97,6 +97,7 @@ class RAGInfoAgent(Agent):
         )
         tools = get_tools_for_agent(self._tool_names) or None
         dispatcher = make_dispatcher_for_agent(self._tool_names) if self._tool_names else None
+        set_agent("RAGInfoAgent")
         reply = call_llm(config, [{"role": "user", "content": user_message}], tools=tools, dispatcher=dispatcher)
 
         if session_id:

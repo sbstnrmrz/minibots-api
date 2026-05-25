@@ -146,5 +146,44 @@ with engine.connect() as conn:
             DROP COLUMN IF EXISTS documents_urls;
     """))
 
+    # --- token usage tracking ---
+    conn.execute(text("""
+        ALTER TABLE chat_messages
+            ADD COLUMN IF NOT EXISTS prompt_tokens     INTEGER,
+            ADD COLUMN IF NOT EXISTS completion_tokens INTEGER,
+            ADD COLUMN IF NOT EXISTS total_tokens      INTEGER,
+            ADD COLUMN IF NOT EXISTS cost_usd          NUMERIC(12, 8);
+    """))
+
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS llm_calls (
+            id               BIGSERIAL PRIMARY KEY,
+            tenant_id        UUID        NOT NULL REFERENCES tenants(id),
+            bot_id           INTEGER     REFERENCES bots(id),
+            chat_id          VARCHAR     REFERENCES chats(id),
+            chat_message_id  INTEGER     REFERENCES chat_messages(id),
+            agent_name       VARCHAR,
+            provider         VARCHAR     NOT NULL,
+            model            VARCHAR     NOT NULL,
+            prompt_tokens    INTEGER     NOT NULL,
+            completion_tokens INTEGER    NOT NULL,
+            total_tokens     INTEGER     NOT NULL,
+            cost_usd         NUMERIC(12, 8),
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_llm_calls_tenant
+            ON llm_calls (tenant_id);
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_llm_calls_chat
+            ON llm_calls (chat_id);
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_llm_calls_ts
+            ON llm_calls (created_at);
+    """))
+
     conn.commit()
     print("Migration complete.")

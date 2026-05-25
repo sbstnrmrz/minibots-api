@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import tempfile
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app import models
+from app.agents.business_analyzer_agent import BusinessAnalyzerAgent
 from app.auth import require_api_key
 from app.database import SessionLocal, get_db
 from app.config import (
@@ -151,6 +153,47 @@ class SetupPayload(BaseModel):
     gcal_calendar_id: str | None = None
 
     model_config = {"populate_by_name": True, "alias_generator": None}
+
+
+@router.post("/analyze")
+async def analyze(
+    payload: str = Form(...),
+    _current_tenant: models.Tenant = Depends(require_api_key),
+):
+    """Score the setup payload with BusinessAnalyzerAgent. No data is saved.
+
+    Returns {"overall_score": int, "report": str} so the frontend can show
+    the readiness report before the user confirms and calls /setup.
+    """
+    try:
+        raw = json.loads(payload)
+        if isinstance(raw.get("general"), dict):
+            g = raw["general"]
+            if "sales-pitch" in g:
+                g["sales_pitch"] = g.pop("sales-pitch")
+            if "additional-info" in g:
+                g["additional_info"] = g.pop("additional-info")
+            if "socialMedia" in g:
+                g["social_media"] = g.pop("socialMedia")
+        if isinstance(raw.get("contact"), dict):
+            c = raw["contact"]
+            if "companyName" in c:
+                c["company_name"] = c.pop("companyName")
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    agent = BusinessAnalyzerAgent()
+    report: str = await asyncio.to_thread(agent.run, json.dumps(raw))
+
+    # Extract overall_score from scorer directly (no second LLM call)
+    from app.agents.business_analyzer_agent import CompletenessScorer
+    try:
+        scoring = CompletenessScorer().score(raw)
+        overall_score = scoring["overall_score"]
+    except Exception:
+        overall_score = None
+
+    return {"overall_score": overall_score, "report": report}
 
 
 @router.post("/setup", status_code=202)
