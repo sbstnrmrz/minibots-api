@@ -7,13 +7,20 @@ from "zero cost".
 """
 
 # (provider_upper, model) → (input_per_1k_usd, output_per_1k_usd)
+# Sources (verified 2026-05-24):
+#   DeepSeek: https://api-docs.deepseek.com/quick_start/pricing
+#   Gemini:   https://ai.google.dev/gemini-api/docs/pricing
 _RATES: dict[tuple[str, str], tuple[float, float]] = {
-    ("DEEPSEEK", "deepseek-v4-flash"): (0.00014, 0.00028),
-    ("DEEPSEEK", "deepseek-v4-pro"):   (0.00027, 0.00110),
-    ("DEEPSEEK", "deepseek-chat"):     (0.00014, 0.00028),
-    ("GEMINI",   "gemini-2.0-flash"):  (0.00010, 0.00040),
-    ("GEMINI",   "gemini-2.5-flash"):  (0.00015, 0.00060),
-    ("GEMINI",   "gemini-2.5-pro"):    (0.00125, 0.01000),
+    # DeepSeek — prices are cache-miss (full) input rate
+    ("DEEPSEEK", "deepseek-v4-flash"): (0.00014,   0.00028),   # $0.14 / $0.28 per 1M
+    ("DEEPSEEK", "deepseek-v4-pro"):   (0.000435,  0.00087),   # $0.435 / $0.87 per 1M (75% promo)
+    ("DEEPSEEK", "deepseek-chat"):     (0.00014,   0.00028),   # alias for v4-flash tier
+
+    # Gemini — standard tier, prompts ≤200k tokens
+    ("GEMINI",   "gemini-2.0-flash"):      (0.00010,  0.00040),  # deprecated Jun 2026; $0.10 / $0.40 per 1M
+    ("GEMINI",   "gemini-2.5-flash"):      (0.00030,  0.00250),  # $0.30 / $2.50 per 1M
+    ("GEMINI",   "gemini-2.5-flash-lite"): (0.00010,  0.00040),  # $0.10 / $0.40 per 1M
+    ("GEMINI",   "gemini-2.5-pro"):        (0.00125,  0.01000),  # $1.25 / $10.00 per 1M
 }
 
 
