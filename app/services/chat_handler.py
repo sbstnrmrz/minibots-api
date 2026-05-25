@@ -248,8 +248,13 @@ async def _handle_tenant_default(
                 agent_config_system_prompt = agent_config.system_prompt
                 agent_config_links = agent_config.links
 
-    namespace = f"agent_{agent_config_id}" if agent_config_id is not None else None
-    if not (namespace and has_rag_table(namespace)):
+    if agent_config_id is None:
+        return await generate_reply(contents)
+
+    # Prefer the rag_sources registry; fall back to naming convention for
+    # tenants that existed before rag_sources was populated by /agents/setup.
+    namespace = get_namespace("agent", agent_config_id) or f"agent_{agent_config_id}"
+    if not has_rag_table(namespace):
         return await generate_reply(contents)
 
     from app.agents.factory import _augment_tools_from_links, _links_context

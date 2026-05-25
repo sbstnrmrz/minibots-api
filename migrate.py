@@ -205,5 +205,86 @@ with engine.connect() as conn:
             ON llm_calls (created_at);
     """))
 
+    # --- agent_configs: config_scope discriminator ---
+    conn.execute(text("""
+        ALTER TABLE agent_configs
+            ADD COLUMN IF NOT EXISTS config_scope VARCHAR;
+    """))
+    # Backfill: agent_configs referenced by tenants.agent_config_id → "tenant_default"
+    conn.execute(text("""
+        UPDATE agent_configs
+        SET config_scope = 'tenant_default'
+        WHERE id IN (SELECT agent_config_id FROM tenants WHERE agent_config_id IS NOT NULL)
+          AND config_scope IS NULL;
+    """))
+    # Backfill: agent_configs referenced only by workflow_agents → "workflow_step"
+    conn.execute(text("""
+        UPDATE agent_configs
+        SET config_scope = 'workflow_step'
+        WHERE id IN (SELECT agent_config_id FROM workflow_agents)
+          AND id NOT IN (SELECT agent_config_id FROM tenants WHERE agent_config_id IS NOT NULL)
+          AND config_scope IS NULL;
+    """))
+
+    # --- rag_sources: backfill rows for existing tenant default agents ---
+    # Tenants that ran /agents/setup before this fix have chunks in rag_chunks
+    # but no rag_sources row. Insert the missing rows so get_namespace() works.
+    conn.execute(text("""
+        INSERT INTO rag_sources (namespace, scope_type, scope_id)
+        SELECT
+            'agent_' || ac.id,
+            'agent',
+            ac.id
+        FROM agent_configs ac
+        JOIN tenants t ON t.agent_config_id = ac.id
+        WHERE NOT EXISTS (
+            SELECT 1 FROM rag_sources rs
+            WHERE rs.namespace = 'agent_' || ac.id
+        );
+    """))
+
+    # --- tenant_files: enforce tenant_id NOT NULL ---
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            -- Remove orphan rows (should not exist, but be safe)
+            DELETE FROM tenant_files WHERE tenant_id IS NULL;
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'tenant_files'
+                  AND column_name = 'tenant_id'
+                  AND is_nullable = 'YES'
+            ) THEN
+                ALTER TABLE tenant_files ALTER COLUMN tenant_id SET NOT NULL;
+            END IF;
+        END $$;
+    """))
+
+    # --- chat_messages: enforce tenant_id NOT NULL ---
+    conn.execute(text("""
+        -- Backfill from the parent Chat row where possible
+        UPDATE chat_messages cm
+        SET tenant_id = c.tenant_id
+        FROM chats c
+        WHERE cm.chat_id = c.id
+          AND cm.tenant_id IS NULL
+          AND c.tenant_id IS NOT NULL;
+    """))
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            -- Remove rows that still have no tenant_id (no recoverable parent)
+            DELETE FROM chat_messages WHERE tenant_id IS NULL;
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'chat_messages'
+                  AND column_name = 'tenant_id'
+                  AND is_nullable = 'YES'
+            ) THEN
+                ALTER TABLE chat_messages ALTER COLUMN tenant_id SET NOT NULL;
+            END IF;
+        END $$;
+    """))
+
     conn.commit()
     print("Migration complete.")

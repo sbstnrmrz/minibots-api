@@ -18,6 +18,11 @@ class AgentContext:
 
 
 class Agent(ABC):
+    # Set True in agents that manage their own conversation memory internally
+    # (e.g. RAGInfoAgent, GenericInfoAgent). Pipeline.run will skip its own
+    # memory injection for those agents to avoid injecting history twice.
+    manages_own_memory: bool = False
+
     def __init__(self, tool_names: list[str] | None = None) -> None:
         self._tool_names: list[str] = tool_names or []
 
@@ -49,7 +54,9 @@ class Pipeline:
         for agent in self.agents:
             raw_input = current.input
 
-            if self._memory and session_id:
+            # Skip Pipeline-level memory injection for agents that manage their
+            # own memory internally — injecting twice creates duplicate history.
+            if self._memory and session_id and not agent.manages_own_memory:
                 history = self._memory.load(session_id, agent.name)
                 if history:
                     context_str = "\n".join(
@@ -66,7 +73,7 @@ class Pipeline:
             current = agent.run(current)
             logger.info("│  %s ▸ out: %s", short, current.input)
 
-            if self._memory and session_id:
+            if self._memory and session_id and not agent.manages_own_memory:
                 self._memory.save(session_id, agent.name, "assistant", current.input)
 
         logger.info("└─ Pipeline done   chat_id=%s", session_id)

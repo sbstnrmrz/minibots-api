@@ -29,7 +29,7 @@ from app.config import (
     MAX_UPLOAD_FILE_COUNT,
 )
 from app.services.storage import delete_file, get_client, get_presigned_url
-from rag.store import clear_namespace, ingest, init_rag_table
+from rag.store import clear_namespace_by_source_type, ingest, init_rag_table
 
 logger = logging.getLogger("agents")
 
@@ -90,7 +90,7 @@ def _ingest_file_job(
                 Body=body,
                 ContentType=content_type,
             )
-            ingest(tmp_path, namespace, source_name=source_name)
+            ingest(tmp_path, namespace, source_name=source_name, source_type="file")
             row = db.query(models.TenantFile).filter(
                 models.TenantFile.id == file_id
             ).first()
@@ -284,6 +284,7 @@ async def setup(
             name=tenant.name,
             agent_type="generic_info",
             links=links_data,
+            config_scope="tenant_default",
         )
         db.add(agent_config)
         db.flush()
@@ -311,29 +312,47 @@ async def setup(
         else:
             db.add(models.AgentGeneralInfo(agent_config_id=agent_config.id, **info_data))
 
-    # delete existing files for this tenant
-    existing_files = db.query(models.TenantFile).filter(
-        models.TenantFile.tenant_id == current_tenant.id
-    ).all()
-    for existing in existing_files:
-        ext = Path(existing.filename).suffix if existing.filename else ""
-        delete_file(f"{current_tenant.id}/agent_docs/{existing.id}{ext}")
-        db.delete(existing)
-
-    # clear and re-ingest RAG namespace
+    # Ensure RAG table + namespace exist; register in rag_sources for
+    # consistent namespace resolution via get_namespace().
     namespace = f"agent_{agent_config.id}"
     init_rag_table(namespace)
-    clear_namespace(namespace)
 
-    # ingest links as text
+    existing_source = db.query(models.RagSource).filter(
+        models.RagSource.namespace == namespace
+    ).first()
+    if existing_source:
+        existing_source.scope_type = "agent"
+        existing_source.scope_id = agent_config.id
+    else:
+        db.add(models.RagSource(
+            namespace=namespace,
+            scope_type="agent",
+            scope_id=agent_config.id,
+        ))
+
+    # Always clear + re-ingest links (fast; reflects current link list).
+    clear_namespace_by_source_type(namespace, "link")
     for link in data.links:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".md", mode="w") as tmp:
             tmp.write(f"# {link.label}\n\n{link.url}\n")
             tmp_path = tmp.name
         try:
-            ingest(tmp_path, namespace, source_name=link.label)
+            ingest(tmp_path, namespace, source_name=link.label, source_type="link")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+
+    # Only delete + replace uploaded files when new files are provided.
+    # Calling setup to update contact info or links alone no longer wipes
+    # previously uploaded documents.
+    if files:
+        existing_files = db.query(models.TenantFile).filter(
+            models.TenantFile.tenant_id == current_tenant.id
+        ).all()
+        for existing in existing_files:
+            ext = Path(existing.filename).suffix if existing.filename else ""
+            delete_file(f"{current_tenant.id}/agent_docs/{existing.id}{ext}")
+            db.delete(existing)
+        clear_namespace_by_source_type(namespace, "file")
 
     # Stream each upload to a temp file (size-capped), record a pending
     # TenantFile row, and hand the heavy work (S3 put + MarkItDown +

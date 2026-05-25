@@ -85,7 +85,14 @@ def ingest(
     chunk_size: int = 500,
     overlap: int = 50,
     source_name: str | None = None,
+    source_type: str | None = None,
 ) -> int:
+    """Ingest a file into the RAG namespace.
+
+    source_type ("link" | "file") is stored in chunk metadata so callers
+    can later selectively clear only one category via
+    clear_namespace_by_source_type().
+    """
     _validate_namespace(namespace)
     text = _read_file(file_path)
     chunks = _chunk_text(text, chunk_size, overlap)
@@ -96,10 +103,12 @@ def ingest(
         cur.execute(_INIT_TABLE_SQL)
         for i, chunk in enumerate(chunks):
             embedding = np.array(_embed(chunk))
-            meta = json.dumps({"source": source, "chunk_index": i})
+            meta: dict = {"source": source, "chunk_index": i}
+            if source_type:
+                meta["source_type"] = source_type
             cur.execute(
                 "INSERT INTO rag_chunks (namespace, content, embedding, metadata) VALUES (%s, %s, %s, %s)",
-                (namespace, chunk, embedding, meta),
+                (namespace, chunk, embedding, json.dumps(meta)),
             )
 
     return len(chunks)
@@ -110,6 +119,21 @@ def clear_namespace(namespace: str) -> None:
     _validate_namespace(namespace)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM rag_chunks WHERE namespace = %s", (namespace,))
+
+
+def clear_namespace_by_source_type(namespace: str, source_type: str) -> None:
+    """Delete only chunks whose metadata.source_type matches source_type.
+
+    Allows selective clearing of link-ingested chunks vs file-ingested chunks
+    without wiping the entire namespace. Chunks ingested without a source_type
+    are not affected.
+    """
+    _validate_namespace(namespace)
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM rag_chunks WHERE namespace = %s AND metadata->>'source_type' = %s",
+            (namespace, source_type),
+        )
 
 
 def has_rag_table(namespace: str) -> bool:

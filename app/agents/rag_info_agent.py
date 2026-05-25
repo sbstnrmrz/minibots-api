@@ -50,6 +50,8 @@ Strict Constraints:
 
 
 class RAGInfoAgent(Agent):
+    manages_own_memory = True  # loads/saves history internally via MemoryStore
+
     def __init__(
         self,
         namespace: str,

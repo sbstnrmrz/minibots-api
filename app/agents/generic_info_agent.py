@@ -36,6 +36,8 @@ Strict Constraints:
 
 
 class GenericInfoAgent(Agent):
+    manages_own_memory = True  # loads/saves history internally via MemoryStore
+
     def __init__(
         self,
         system_prompt: str = GENERIC_INFO_SYSTEM_PROMPT,
