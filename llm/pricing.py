@@ -21,6 +21,11 @@ _RATES: dict[tuple[str, str], tuple[float, float]] = {
     ("GEMINI",   "gemini-2.5-flash"):      (0.00030,  0.00250),  # $0.30 / $2.50 per 1M
     ("GEMINI",   "gemini-2.5-flash-lite"): (0.00010,  0.00040),  # $0.10 / $0.40 per 1M
     ("GEMINI",   "gemini-2.5-pro"):        (0.00125,  0.01000),  # $1.25 / $10.00 per 1M
+
+    # Gemini embeddings — output rate is always 0 (no completion tokens)
+    # Sources: https://ai.google.dev/gemini-api/docs/pricing (verified 2026-05-24)
+    ("GEMINI",   "gemini-embedding-001"): (0.00015,  0.0),       # $0.15 / $0.00 per 1M
+    ("GEMINI",   "gemini-embedding-2"):   (0.00020,  0.0),       # $0.20 / $0.00 per 1M
 }
 
 

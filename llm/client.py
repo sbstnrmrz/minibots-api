@@ -353,6 +353,19 @@ def embed(
         ) from e
     vector = res.data[0].embedding
     logger.info("   ← embed %s  dim=%d", model, len(vector))
+    if hasattr(res, "usage") and res.usage:
+        u = res.usage
+        prompt_toks = getattr(u, "prompt_tokens", 0) or 0
+        total_toks = getattr(u, "total_tokens", prompt_toks)
+        _record_usage(LLMCallRecord(
+            provider=provider.value,
+            model=model,
+            prompt_tokens=prompt_toks,
+            completion_tokens=0,
+            total_tokens=total_toks,
+            cost_usd=compute_cost(provider.value, model, prompt_toks, 0),
+            agent_name="embedding",
+        ))
     return vector
 
 
