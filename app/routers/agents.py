@@ -313,11 +313,11 @@ async def setup(
 
     # delete existing files for this tenant
     existing_files = db.query(models.TenantFile).filter(
-        models.TenantFile.tenant_id == tenant_id
+        models.TenantFile.tenant_id == current_tenant.id
     ).all()
     for existing in existing_files:
         ext = Path(existing.filename).suffix if existing.filename else ""
-        delete_file(f"{tenant_id}/agent_docs/{existing.id}{ext}")
+        delete_file(f"{current_tenant.id}/agent_docs/{existing.id}{ext}")
         db.delete(existing)
 
     # clear and re-ingest RAG namespace
@@ -343,10 +343,10 @@ async def setup(
         ext = Path(file.filename).suffix if file.filename else ""
         tmp_path, _bytes = await _stream_to_tempfile(file, suffix=ext)
         file_id = uuid.uuid4()
-        s3_key = f"{tenant_id}/agent_docs/{file_id}{ext}"
+        s3_key = f"{current_tenant.id}/agent_docs/{file_id}{ext}"
         db.add(models.TenantFile(
             id=file_id,
-            tenant_id=tenant_id,
+            tenant_id=current_tenant.id,
             agent_config_id=agent_config.id,
             filename=file.filename,
             content_type=file.content_type or "application/octet-stream",
