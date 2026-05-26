@@ -4,7 +4,7 @@ import logging
 import re
 
 from app.agents.base import Agent, AgentContext
-from llm import DEFAULT_LLM_CONFIG, call_llm
+from llm import DEFAULT_LLM_CONFIG, call_llm, set_agent
 
 logger = logging.getLogger("intent")
 
@@ -93,6 +93,7 @@ class IntentAnalyzerAgent(Agent):
             DEFAULT_LLM_CONFIG,
             system_prompt=INTENT_ANALYZER_SYSTEM_PROMPT,
         )
+        set_agent("IntentAnalyzerAgent")
         reply = call_llm(config, [{"role": "user", "content": cleaned}])
         try:
             parsed = json.loads(reply)

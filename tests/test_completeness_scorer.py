@@ -20,8 +20,8 @@ def _filled_paragraph(prefix: str = "text ") -> str:
 
 
 def _detailed_answer() -> str:
-    """Long enough to clear _FAQ_ANSWER_THRESHOLD."""
-    return "answer " * 10
+    """Long enough to clear _FAQ_ANSWER_THRESHOLD (currently 80 chars)."""
+    return "answer " * 15  # 105 chars — safely above the 80-char bar
 
 
 def test_empty_form_scores_zero_with_every_category_critical():

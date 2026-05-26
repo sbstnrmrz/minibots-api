@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import tempfile
@@ -13,12 +14,15 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app import models
+from app.agents.business_analyzer_agent import BusinessAnalyzerAgent
 from app.auth import require_api_key
 from app.database import SessionLocal, get_db
+from llm.usage import get_calls, start_tracking
 from app.config import (
     ALLOWED_UPLOAD_SUFFIXES,
     GARAGE_BUCKET,
@@ -26,7 +30,7 @@ from app.config import (
     MAX_UPLOAD_FILE_COUNT,
 )
 from app.services.storage import delete_file, get_client, get_presigned_url
-from rag.store import clear_namespace, ingest, init_rag_table
+from rag.store import clear_namespace_by_source_type, ingest, init_rag_table
 
 logger = logging.getLogger("agents")
 
@@ -87,7 +91,7 @@ def _ingest_file_job(
                 Body=body,
                 ContentType=content_type,
             )
-            ingest(tmp_path, namespace, source_name=source_name)
+            ingest(tmp_path, namespace, source_name=source_name, source_type="file")
             row = db.query(models.TenantFile).filter(
                 models.TenantFile.id == file_id
             ).first()
@@ -151,6 +155,86 @@ class SetupPayload(BaseModel):
     gcal_calendar_id: str | None = None
 
     model_config = {"populate_by_name": True, "alias_generator": None}
+
+
+def _normalize_payload(raw: dict) -> dict:
+    """Normalize frontend camelCase / hyphenated keys to snake_case."""
+    if isinstance(raw.get("general"), dict):
+        g = raw["general"]
+        if "sales-pitch" in g:
+            g["sales_pitch"] = g.pop("sales-pitch")
+        if "additional-info" in g:
+            g["additional_info"] = g.pop("additional-info")
+        if "socialMedia" in g:
+            g["social_media"] = g.pop("socialMedia")
+    if isinstance(raw.get("contact"), dict):
+        c = raw["contact"]
+        if "companyName" in c:
+            c["company_name"] = c.pop("companyName")
+    return raw
+
+
+@router.post("/analyze")
+async def analyze(
+    payload: str = Form(...),
+    current_tenant: models.Tenant = Depends(require_api_key),
+):
+    """Score the setup payload with BusinessAnalyzerAgent. No data is saved.
+
+    Returns an NDJSON stream (application/x-ndjson). Each line is a JSON
+    object. Chunk types in emission order:
+
+      {"type": "scored",        "overall_score": int, "categories": {...}, "field_details": {...}}
+      {"type": "section",       "key": "<cat>", "data": {...}}  — one per category (5 total)
+      {"type": "content_flags", "flags": [...]}
+      {"type": "complete",      "language": "...", "business_type": "...",
+                                "overall_summary": "...", "chatbot_potential": "...",
+                                "next_steps": [...], "faq_coverage": {...}}
+
+    The "scored" chunk arrives in ~1 s (pure Python). Section chunks arrive
+    as each parallel LLM call resolves (~10–20 s total instead of ~2 min).
+
+    Frontend: consume with fetch + ReadableStream / getReader(), splitting on
+    newlines and JSON.parse()-ing each line.
+    """
+    try:
+        raw = json.loads(payload)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    normalized = _normalize_payload(raw)
+    tenant_id = current_tenant.id
+
+    async def stream():
+        start_tracking()
+        agent = BusinessAnalyzerAgent()
+        db = SessionLocal()
+        try:
+            async for chunk in agent.analyze_sections_async(json.dumps(normalized)):
+                yield json.dumps(chunk, ensure_ascii=False) + "\n"
+        except Exception as e:
+            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
+        finally:
+            # Persist all accumulated LLM usage after the stream completes.
+            try:
+                for c in get_calls():
+                    db.add(models.LLMCall(
+                        tenant_id=tenant_id,
+                        agent_name=c.agent_name,
+                        provider=c.provider,
+                        model=c.model,
+                        prompt_tokens=c.prompt_tokens,
+                        completion_tokens=c.completion_tokens,
+                        total_tokens=c.total_tokens,
+                        cost_usd=c.cost_usd,
+                    ))
+                db.commit()
+            except Exception:
+                logger.exception("Failed to persist LLM usage for tenant_id=%s", tenant_id)
+            finally:
+                db.close()
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 @router.post("/setup", status_code=202)
@@ -224,6 +308,7 @@ async def setup(
             name=tenant.name,
             agent_type="generic_info",
             links=links_data,
+            config_scope="tenant_default",
         )
         db.add(agent_config)
         db.flush()
@@ -251,29 +336,47 @@ async def setup(
         else:
             db.add(models.AgentGeneralInfo(agent_config_id=agent_config.id, **info_data))
 
-    # delete existing files for this tenant
-    existing_files = db.query(models.TenantFile).filter(
-        models.TenantFile.tenant_id == tenant_id
-    ).all()
-    for existing in existing_files:
-        ext = Path(existing.filename).suffix if existing.filename else ""
-        delete_file(f"{tenant_id}/agent_docs/{existing.id}{ext}")
-        db.delete(existing)
-
-    # clear and re-ingest RAG namespace
+    # Ensure RAG table + namespace exist; register in rag_sources for
+    # consistent namespace resolution via get_namespace().
     namespace = f"agent_{agent_config.id}"
     init_rag_table(namespace)
-    clear_namespace(namespace)
 
-    # ingest links as text
+    existing_source = db.query(models.RagSource).filter(
+        models.RagSource.namespace == namespace
+    ).first()
+    if existing_source:
+        existing_source.scope_type = "agent"
+        existing_source.scope_id = agent_config.id
+    else:
+        db.add(models.RagSource(
+            namespace=namespace,
+            scope_type="agent",
+            scope_id=agent_config.id,
+        ))
+
+    # Always clear + re-ingest links (fast; reflects current link list).
+    clear_namespace_by_source_type(namespace, "link")
     for link in data.links:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".md", mode="w") as tmp:
             tmp.write(f"# {link.label}\n\n{link.url}\n")
             tmp_path = tmp.name
         try:
-            ingest(tmp_path, namespace, source_name=link.label)
+            ingest(tmp_path, namespace, source_name=link.label, source_type="link")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+
+    # Only delete + replace uploaded files when new files are provided.
+    # Calling setup to update contact info or links alone no longer wipes
+    # previously uploaded documents.
+    if files:
+        existing_files = db.query(models.TenantFile).filter(
+            models.TenantFile.tenant_id == current_tenant.id
+        ).all()
+        for existing in existing_files:
+            ext = Path(existing.filename).suffix if existing.filename else ""
+            delete_file(f"{current_tenant.id}/agent_docs/{existing.id}{ext}")
+            db.delete(existing)
+        clear_namespace_by_source_type(namespace, "file")
 
     # Stream each upload to a temp file (size-capped), record a pending
     # TenantFile row, and hand the heavy work (S3 put + MarkItDown +
@@ -283,10 +386,10 @@ async def setup(
         ext = Path(file.filename).suffix if file.filename else ""
         tmp_path, _bytes = await _stream_to_tempfile(file, suffix=ext)
         file_id = uuid.uuid4()
-        s3_key = f"{tenant_id}/agent_docs/{file_id}{ext}"
+        s3_key = f"{current_tenant.id}/agent_docs/{file_id}{ext}"
         db.add(models.TenantFile(
             id=file_id,
-            tenant_id=tenant_id,
+            tenant_id=current_tenant.id,
             agent_config_id=agent_config.id,
             filename=file.filename,
             content_type=file.content_type or "application/octet-stream",

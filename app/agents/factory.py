@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as _Session
 
 from app import models
 from app.agents.base import Agent, Pipeline
@@ -40,6 +40,7 @@ def _build_agent(
     agent_config: models.AgentConfig,
     tool_names: list[str],
     workflow_id: int | None = None,
+    db: "_Session | None" = None,
 ) -> Agent:
     config: dict = agent_config.config_json or {}
     agent_type: str = agent_config.agent_type
@@ -96,10 +97,17 @@ def _build_agent(
         base_prompt = agent_config.system_prompt or SCHEDULING_SYSTEM_PROMPT
         tenant_id = config.get("tenant_id")
         calendar_id: str | None = None
-        if tenant_id:
+        if tenant_id and db is not None:
             tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
             if tenant:
                 calendar_id = tenant.gcal_calendar_id
+        elif tenant_id and db is None:
+            import logging as _logging
+            _logging.getLogger("factory").warning(
+                "scheduler agent config %s has tenant_id but no db session was provided; "
+                "calendar_id will be None",
+                agent_config.id,
+            )
         return SchedulingAgent(
             system_prompt=base_prompt,
             tool_names=tool_names or None,
@@ -112,7 +120,7 @@ def _build_agent(
 
 def build_pipeline(
     workflow_id: int,
-    db: Session,
+    db: "_Session",
     memory_store: "MemoryStore | None" = None,
 ) -> Pipeline:
     """Load a workflow from the DB and assemble a ready-to-run Pipeline."""
@@ -148,6 +156,6 @@ def build_pipeline(
         )
         tool_names = [t.tool_name for t in tool_rows]
 
-        agents.append(_build_agent(agent_config, tool_names, workflow_id=workflow_id))
+        agents.append(_build_agent(agent_config, tool_names, workflow_id=workflow_id, db=db))
 
     return Pipeline(agents, memory_store=memory_store)

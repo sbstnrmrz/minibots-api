@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 import enum
 import uuid
@@ -38,7 +38,7 @@ class TenantFile(Base):
     __tablename__ = "tenant_files"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     agent_config_id = Column(Integer, ForeignKey("agent_configs.id"), nullable=True)
     filename = Column(String, nullable=False)
     content_type = Column(String, nullable=False)
@@ -81,6 +81,9 @@ class AgentConfig(Base):
     system_prompt = Column(String, nullable=True)
     config_json = Column(JSONB, nullable=True)
     links = Column(JSONB, nullable=True)  # [{label: str, url: str}]
+    # "tenant_default" = created by /agents/setup for the tenant's default AI
+    # "workflow_step"  = created as one step inside a Workflow pipeline
+    config_scope = Column(String, nullable=True)  # see values above
 
 
 class WorkflowAgent(Base):
@@ -106,6 +109,9 @@ class RagSource(Base):
     id = Column(Integer, primary_key=True, index=True)
     namespace = Column(String, nullable=False, unique=True)
     scope_type = Column(String, nullable=False)  # "bot", "workflow", "agent"
+    # scope_id is polymorphic: points to bots.id / workflows.id / agent_configs.id
+    # depending on scope_type. No FK constraint (polymorphic pattern).
+    # Application code must clean up orphan rows when the owner is deleted.
     scope_id = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -125,7 +131,8 @@ class Chat(Base):
     __tablename__ = "chats"
 
     id = Column(String, primary_key=True)
-    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)   # nullable: tenant-default chats have no bot
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -133,8 +140,36 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, index=True)
-    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False)
+    # bot_id and tenant_id are intentionally denormalized from Chat for
+    # query performance (avoids a JOIN when filtering messages by bot or
+    # tenant directly). Must stay in sync with the parent Chat row.
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)   # nullable: tenant-default chats have no bot
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
     role = Column(String, nullable=False)  # "user" or "model"
     content = Column(String, nullable=False)
+    # Aggregated token totals for model-role rows (sum across all LLM calls in the turn)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    cost_usd = Column(Numeric(12, 8), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LLMCall(Base):
+    """One row per provider API call. Multiple rows can belong to one chat turn."""
+    __tablename__ = "llm_calls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)
+    chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
+    chat_message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=True)
+    agent_name = Column(String, nullable=True)   # e.g. "RAGInfoAgent", "direct"
+    provider = Column(String, nullable=False)     # e.g. "DEEPSEEK"
+    model = Column(String, nullable=False)
+    prompt_tokens = Column(Integer, nullable=False)
+    completion_tokens = Column(Integer, nullable=False)
+    total_tokens = Column(Integer, nullable=False)
+    cost_usd = Column(Numeric(12, 8), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

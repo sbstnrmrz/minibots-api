@@ -2,7 +2,7 @@ import dataclasses
 
 from app.agents.base import Agent, AgentContext
 from app.agents.memory import MemoryStore
-from llm import DEFAULT_LLM_CONFIG, call_llm
+from llm import DEFAULT_LLM_CONFIG, call_llm, set_agent
 
 GENERIC_INFO_SYSTEM_PROMPT = """Role: You are a knowledgeable, professional, and helpful AI assistant.
 
@@ -36,6 +36,8 @@ Strict Constraints:
 
 
 class GenericInfoAgent(Agent):
+    manages_own_memory = True  # loads/saves history internally via MemoryStore
+
     def __init__(
         self,
         system_prompt: str = GENERIC_INFO_SYSTEM_PROMPT,
@@ -63,6 +65,7 @@ class GenericInfoAgent(Agent):
             DEFAULT_LLM_CONFIG,
             system_prompt=self._system_prompt,
         )
+        set_agent("GenericInfoAgent")
         reply = call_llm(config, [{"role": "user", "content": user_message}])
 
         if session_id:

@@ -38,6 +38,9 @@ from typing import Any, Callable
 import openai
 from dotenv import load_dotenv
 
+from llm.pricing import compute_cost
+from llm.usage import LLMCallRecord, get_current_agent, record as _record_usage
+
 load_dotenv()
 
 logger = logging.getLogger("llm")
@@ -187,6 +190,21 @@ def call_llm(
                 f"[{config.provider.value}] LLM call failed: {e}"
             ) from e
 
+        if res.usage:
+            u = res.usage
+            _record_usage(LLMCallRecord(
+                provider=config.provider.value,
+                model=config.model,
+                prompt_tokens=u.prompt_tokens,
+                completion_tokens=u.completion_tokens,
+                total_tokens=u.total_tokens,
+                cost_usd=compute_cost(
+                    config.provider.value, config.model,
+                    u.prompt_tokens, u.completion_tokens,
+                ),
+                agent_name=get_current_agent(),
+            ))
+
         choice = res.choices[0]
         tool_calls = choice.message.tool_calls
 
@@ -267,6 +285,21 @@ async def acall_llm(
                 f"[{config.provider.value}] LLM call failed: {e}"
             ) from e
 
+        if res.usage:
+            u = res.usage
+            _record_usage(LLMCallRecord(
+                provider=config.provider.value,
+                model=config.model,
+                prompt_tokens=u.prompt_tokens,
+                completion_tokens=u.completion_tokens,
+                total_tokens=u.total_tokens,
+                cost_usd=compute_cost(
+                    config.provider.value, config.model,
+                    u.prompt_tokens, u.completion_tokens,
+                ),
+                agent_name=get_current_agent(),
+            ))
+
         choice = res.choices[0]
         tool_calls = choice.message.tool_calls
 
@@ -320,6 +353,19 @@ def embed(
         ) from e
     vector = res.data[0].embedding
     logger.info("   ← embed %s  dim=%d", model, len(vector))
+    if hasattr(res, "usage") and res.usage:
+        u = res.usage
+        prompt_toks = getattr(u, "prompt_tokens", 0) or 0
+        total_toks = getattr(u, "total_tokens", prompt_toks)
+        _record_usage(LLMCallRecord(
+            provider=provider.value,
+            model=model,
+            prompt_tokens=prompt_toks,
+            completion_tokens=0,
+            total_tokens=total_toks,
+            cost_usd=compute_cost(provider.value, model, prompt_toks, 0),
+            agent_name="embedding",
+        ))
     return vector
 
 
