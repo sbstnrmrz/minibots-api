@@ -1102,6 +1102,7 @@ class BusinessAnalyzerAgent(Agent):
             "overall_score": scorer_result["overall_score"],
             "categories": scorer_result["categories"],
             "field_details": scorer_result["field_details"],
+            "critical_gap_keys": scorer_result["critical_gaps"],
         }
 
         # Step 2: infer a rough business type hint from whatever the model can see
