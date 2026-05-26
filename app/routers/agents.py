@@ -14,6 +14,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
@@ -156,61 +157,84 @@ class SetupPayload(BaseModel):
     model_config = {"populate_by_name": True, "alias_generator": None}
 
 
+def _normalize_payload(raw: dict) -> dict:
+    """Normalize frontend camelCase / hyphenated keys to snake_case."""
+    if isinstance(raw.get("general"), dict):
+        g = raw["general"]
+        if "sales-pitch" in g:
+            g["sales_pitch"] = g.pop("sales-pitch")
+        if "additional-info" in g:
+            g["additional_info"] = g.pop("additional-info")
+        if "socialMedia" in g:
+            g["social_media"] = g.pop("socialMedia")
+    if isinstance(raw.get("contact"), dict):
+        c = raw["contact"]
+        if "companyName" in c:
+            c["company_name"] = c.pop("companyName")
+    return raw
+
+
 @router.post("/analyze")
 async def analyze(
     payload: str = Form(...),
     current_tenant: models.Tenant = Depends(require_api_key),
-    db: Session = Depends(get_db),
 ):
     """Score the setup payload with BusinessAnalyzerAgent. No data is saved.
 
-    Returns {"overall_score": int, "report": str} so the frontend can show
-    the readiness report before the user confirms and calls /setup.
+    Returns an NDJSON stream (application/x-ndjson). Each line is a JSON
+    object. Chunk types in emission order:
+
+      {"type": "scored",        "overall_score": int, "categories": {...}, "field_details": {...}}
+      {"type": "section",       "key": "<cat>", "data": {...}}  — one per category (5 total)
+      {"type": "content_flags", "flags": [...]}
+      {"type": "complete",      "language": "...", "business_type": "...",
+                                "overall_summary": "...", "chatbot_potential": "...",
+                                "next_steps": [...], "faq_coverage": {...}}
+
+    The "scored" chunk arrives in ~1 s (pure Python). Section chunks arrive
+    as each parallel LLM call resolves (~10–20 s total instead of ~2 min).
+
+    Frontend: consume with fetch + ReadableStream / getReader(), splitting on
+    newlines and JSON.parse()-ing each line.
     """
     try:
         raw = json.loads(payload)
-        if isinstance(raw.get("general"), dict):
-            g = raw["general"]
-            if "sales-pitch" in g:
-                g["sales_pitch"] = g.pop("sales-pitch")
-            if "additional-info" in g:
-                g["additional_info"] = g.pop("additional-info")
-            if "socialMedia" in g:
-                g["social_media"] = g.pop("socialMedia")
-        if isinstance(raw.get("contact"), dict):
-            c = raw["contact"]
-            if "companyName" in c:
-                c["company_name"] = c.pop("companyName")
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    start_tracking()
-    agent = BusinessAnalyzerAgent()
-    report: str = await asyncio.to_thread(agent.run, json.dumps(raw))
+    normalized = _normalize_payload(raw)
+    tenant_id = current_tenant.id
 
-    # Persist usage (no bot_id / chat_id — standalone analysis call)
-    for c in get_calls():
-        db.add(models.LLMCall(
-            tenant_id=current_tenant.id,
-            agent_name=c.agent_name,
-            provider=c.provider,
-            model=c.model,
-            prompt_tokens=c.prompt_tokens,
-            completion_tokens=c.completion_tokens,
-            total_tokens=c.total_tokens,
-            cost_usd=c.cost_usd,
-        ))
-    db.commit()
+    async def stream():
+        start_tracking()
+        agent = BusinessAnalyzerAgent()
+        db = SessionLocal()
+        try:
+            async for chunk in agent.analyze_sections_async(json.dumps(normalized)):
+                yield json.dumps(chunk, ensure_ascii=False) + "\n"
+        except Exception as e:
+            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
+        finally:
+            # Persist all accumulated LLM usage after the stream completes.
+            try:
+                for c in get_calls():
+                    db.add(models.LLMCall(
+                        tenant_id=tenant_id,
+                        agent_name=c.agent_name,
+                        provider=c.provider,
+                        model=c.model,
+                        prompt_tokens=c.prompt_tokens,
+                        completion_tokens=c.completion_tokens,
+                        total_tokens=c.total_tokens,
+                        cost_usd=c.cost_usd,
+                    ))
+                db.commit()
+            except Exception:
+                logger.exception("Failed to persist LLM usage for tenant_id=%s", tenant_id)
+            finally:
+                db.close()
 
-    # Extract overall_score from scorer directly (no second LLM call)
-    from app.agents.business_analyzer_agent import CompletenessScorer
-    try:
-        scoring = CompletenessScorer().score(raw)
-        overall_score = scoring["overall_score"]
-    except Exception:
-        overall_score = None
-
-    return {"overall_score": overall_score, "report": report}
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 @router.post("/setup", status_code=202)
