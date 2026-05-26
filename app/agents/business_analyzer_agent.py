@@ -42,6 +42,15 @@ _SECTION_LLM_CONFIG = LLMConfig(
     max_tokens=1200,
 )
 
+# FAQs section needs more tokens: 5-8 detailed example answers plus field
+# suggestions can easily exceed 1200 tokens. Use pro model to match
+# the quality users expect from the previous monolithic call.
+_FAQ_SECTION_LLM_CONFIG = LLMConfig(
+    provider=LLMProvider.DEEPSEEK,
+    model="deepseek-v4-pro",
+    max_tokens=3000,
+)
+
 # The "overall" call (summary, business_type, chatbot_potential, next_steps)
 # benefits from the stronger model since it synthesises everything.
 _OVERALL_LLM_CONFIG = LLMConfig(
@@ -1120,8 +1129,11 @@ class BusinessAnalyzerAgent(Agent):
             prompt = _build_section_prompt(
                 key, form_data, scorer_result, language, business_type_hint
             )
+            # FAQs section generates 5-8 detailed example answers — needs more
+            # tokens and the stronger model to avoid truncation.
+            base_cfg = _FAQ_SECTION_LLM_CONFIG if key == "faqs" else _SECTION_LLM_CONFIG
             config = dataclasses.replace(
-                _SECTION_LLM_CONFIG,
+                base_cfg,
                 system_prompt=_SECTION_SYSTEM,
             )
             set_agent(f"BusinessAnalyzerAgent.{key}")
