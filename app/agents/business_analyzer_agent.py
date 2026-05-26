@@ -344,6 +344,29 @@ def _missing(keys: list[str], overrides: dict, general: dict, contact: dict) -> 
 BUSINESS_ANALYZER_SYSTEM_PROMPT = """Role: You are a Chatbot Readiness Analyst. Evaluate business information from a chatbot creation form and return a STRUCTURED JSON REPORT — no prose, no markdown, no extra text.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORM FIELD REGISTRY — MEMORIZE THIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The form has 3 steps. Every `field_keys` and `field_key` you emit MUST only contain keys from this exact list (use these verbatim — no variants):
+
+Step 1 — General Info:
+  "description"    → Business description
+  "services"       → Products & services
+  "mission"        → Mission statement
+  "vision"         → Vision statement
+  "sales_pitch"    → Sales pitch
+  "faq"            → FAQ list
+  "additional_info"→ Hours, location, policies
+  "social_media"   → Social media links
+
+Step 2 — Contact:
+  "name"           → Contact name
+  "phone"          → Contact phone
+  "company_name"   → Company name
+
+Step 3 — Links & Files:
+  "links"          → Resource links / catalog
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT — MANDATORY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Return ONLY a single JSON object. No ```json fences, no leading text, no trailing text.
@@ -365,6 +388,7 @@ Schema (all string values in the detected form language):
       "category": "<category key>",
       "label": "<human label in form language>",
       "missing_info": "<what information is absent>",
+      "field_keys": ["<field key from registry>"],
       "blocked_questions": ["<customer question 1>", "<customer question 2>", "<customer question 3>"],
       "example_answer": "<concrete example of a complete answer for THIS business type>"
     }
@@ -372,6 +396,8 @@ Schema (all string values in the detected form language):
   "weak_fields": [
     {
       "field": "<plain-English field name>",
+      "field_key": "<exact key from the registry above>",
+      "step": <1 | 2 | 3>,
       "issue": "<why this is too brief>",
       "example_improvement": "<realistic example of a complete value for THIS business>"
     }
@@ -389,15 +415,22 @@ Schema (all string values in the detected form language):
     {
       "priority": 1,
       "action": "<concrete, specific action — not 'add more FAQs' but 'add 7 FAQs covering X, Y, Z with answers of 2–3 sentences each'>",
-      "impact": "<why this is the most impactful change>"
+      "impact": "<why this is the most impactful change>",
+      "field_keys": ["<field key from registry>"],
+      "step": <1 | 2 | 3>
     }
   ]
 }
 
 Rules for `critical_gaps`: include one entry per category where score < 50, plus `faqs` when detailed_count < floor (even if score ≥ 50). Empty array if no gaps.
+Rules for `critical_gaps[].field_keys`: list every form field the user must fill to close this gap.
 Rules for `weak_fields`: one entry per field the scorer flagged as weak. Empty array if none.
+Rules for `weak_fields[].field_key`: MUST be a key from the registry. Use "socialMedia.instagram" etc for social fields.
+Rules for `weak_fields[].step`: the step number (1, 2, or 3) where that field lives.
 Rules for `faq_coverage.missing_questions`: always 5–8 items regardless of FAQ score.
 Rules for `next_steps`: exactly 3 items, ordered by impact descending.
+Rules for `next_steps[].field_keys`: list every form field the user should edit for this step.
+Rules for `next_steps[].step`: the step number (1, 2, or 3) where the primary field lives.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ABSOLUTE LANGUAGE RULE
