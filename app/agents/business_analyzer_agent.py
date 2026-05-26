@@ -1125,7 +1125,7 @@ class BusinessAnalyzerAgent(Agent):
         # Step 3: launch all async tasks in parallel.
         section_keys = list(_CATEGORY_LABELS.keys())
 
-        async def _run_section(key: str) -> tuple[str, dict]:
+        async def _run_section(key: str) -> dict:
             prompt = _build_section_prompt(
                 key, form_data, scorer_result, language, business_type_hint
             )
@@ -1141,10 +1141,10 @@ class BusinessAnalyzerAgent(Agent):
                 raw = await acall_llm(config, [{"role": "user", "content": prompt}])
                 parsed = _safe_parse_llm_json(raw)
                 if isinstance(parsed, dict):
-                    return key, parsed
-            except Exception as e:
+                    return parsed
+            except Exception:
                 pass
-            return key, {"summary": "", "field_suggestions": {}}
+            return {"summary": "", "field_suggestions": {}}
 
         async def _run_overall() -> dict:
             prompt = _build_overall_prompt(form_data, scorer_result, language)
@@ -1208,28 +1208,17 @@ class BusinessAnalyzerAgent(Agent):
                     merged["missing_faq_questions"] = section_data["missing_faq_questions"]
                 yield {"type": "section", "key": key, "data": merged}
 
-        # Final complete chunk — aggregates everything.
-        faq_section_data: dict = {}  # collected from section chunks above; re-derive
-        # (We don't keep section results in memory above — just yield them.
-        # The faq_coverage numeric fields come from the scorer.)
-        faq_coverage_out = {
-            "detailed_count": scorer_result.get("_detailed_faqs", 0),
-            "weak_count": scorer_result.get("_weak_faqs", 0),
-            "target": _FAQ_TARGET,
-            "faq_items": scorer_result.get("_faq_items") or [],
-        }
-
+        # Final complete chunk — only fields the frontend actually uses.
         yield {
             "type": "complete",
-            "overall_score": scorer_result["overall_score"],
             "language": overall_data.get("language", language),
             "business_type": overall_data.get("business_type", ""),
             "overall_summary": overall_data.get("overall_summary", ""),
             "chatbot_potential": overall_data.get("chatbot_potential", ""),
             "next_steps": overall_data.get("next_steps") or [],
-            "faq_coverage": faq_coverage_out,
-            "critical_gap_keys": scorer_result["critical_gaps"],
-            "present_fields": scorer_result["present_fields"],
-            "empty_fields": scorer_result["empty_fields"],
-            "weak_field_names": scorer_result["weak_fields"],
+            "faq_coverage": {
+                "detailed_count": scorer_result.get("_detailed_faqs", 0),
+                "weak_count": scorer_result.get("_weak_faqs", 0),
+                "target": _FAQ_TARGET,
+            },
         }
