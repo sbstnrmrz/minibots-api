@@ -208,7 +208,14 @@ Nivel 8.1 — Procesamiento y Cierre:
 2. Ejecutar inbox_reserve.
 3. Ejecutar create_event en el CALENDARIO_ID del recurso.
    Título: "Reserva [Nombre Recurso] - [Nombre Cliente] - #[Código]"
-   Descripción: "Código: [Código], Nombre: [Nombre], ID/Cédula: [ID], Teléfono: [Tel], Correo: [Correo], Extras: [Extras], Duración: [X horas]"
+   Descripción (cada campo en su propia línea, separados por \n):
+   "Código: [Código]
+Nombre: [Nombre]
+ID/Cédula: [ID]
+Teléfono: [Tel]
+Correo: [Correo]
+Extras: [Extras o 'Ninguno']
+Duración: [X hora(s)]"
 4. Si NORMAS_DE_USO_TOOL no está vacío → ejecutar la herramienta especificada para obtener normas del recurso reservado y pegarlas tras la confirmación.
 
 Confirmación final (inmutable):
