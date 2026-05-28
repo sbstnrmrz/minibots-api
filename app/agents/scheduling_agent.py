@@ -190,8 +190,13 @@ Enviar:
 ¿Deseas continuar con tu reserva?"
 
 Nivel 7.1 — Datos Personales:
-Si no están en el historial, solicitar en un solo mensaje:
-"¡Excelente! Para continuar, indícame tu nombre completo, correo electrónico, número de cédula/ID y número telefónico."
+Si no están en el historial, solicitar en un solo mensaje usando SIEMPRE formato de lista con "-":
+"¡Excelente! Para continuar, necesito los siguientes datos:
+- Nombre completo
+- Correo electrónico
+- Número de cédula / ID
+- Número telefónico"
+NUNCA enviar estos campos en línea separados por comas. SIEMPRE como lista con "-".
 Extracción automática:
   - Nombre: texto sin números ni @
   - Correo: contiene @
@@ -279,6 +284,25 @@ Si "No" → "Entendido. Mantenemos tu reserva activa."
 """
 
 _DEFAULT_TOOL_NAMES = ["get_events", "create_event", "delete_event", "inbox_reserve"]
+
+
+def _substitute_vars(prompt: str, cfg: dict) -> str:
+    """Replace {{VAR}} placeholders in the prompt body with values from cfg."""
+    replacements = {
+        "{{NOMBRE_NEGOCIO}}": cfg.get("nombre_negocio", ""),
+        "{{CANAL}}": cfg.get("canal", ""),
+        "{{IDIOMA}}": cfg.get("idioma", "Español"),
+        "{{CONTACTO_PAGOS_ALTERNATIVOS}}": cfg.get("contacto_pagos_alternativos", ""),
+        "{{TELEFONO_SOPORTE_HUMANO}}": cfg.get("telefono_soporte_humano", ""),
+        "{{PORCENTAJE_INICIAL}}": str(cfg.get("porcentaje_inicial", 0)),
+        "{{POLITICA_MODIFICACION_DIAS}}": str(cfg.get("politica_modificacion_dias", 15)),
+        "{{COLCHON_LIMPIEZA_MINUTOS}}": str(cfg.get("colchon_limpieza_minutos", 0)),
+        "{{CALENDARIO_REUNIONES_ID}}": cfg.get("calendario_reuniones_id", ""),
+        "{{NORMAS_DE_USO_TOOL}}": cfg.get("normas_de_uso_tool", ""),
+    }
+    for placeholder, value in replacements.items():
+        prompt = prompt.replace(placeholder, value)
+    return prompt
 
 
 def render_business_config(cfg: dict) -> str:
@@ -385,6 +409,7 @@ class SchedulingAgent(Agent):
 
         base_prompt = self._system_prompt
         if self._business_config:
+            base_prompt = _substitute_vars(base_prompt, self._business_config)
             base_prompt = render_business_config(self._business_config) + "\n\n---\n\n" + base_prompt
 
         system_prompt = f"{base_prompt}\n\nCurrent date and time: {_now}"
