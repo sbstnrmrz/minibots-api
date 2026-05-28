@@ -286,5 +286,17 @@ with engine.connect() as conn:
         END $$;
     """))
 
+    # --- reservations: cancelled flag + reservation_code ---
+    conn.execute(text("""
+        ALTER TABLE reservations
+            ADD COLUMN IF NOT EXISTS cancelled         BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS reservation_code VARCHAR;
+    """))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_reservations_code
+            ON reservations (reservation_code)
+            WHERE reservation_code IS NOT NULL;
+    """))
+
     conn.commit()
     print("Migration complete.")
