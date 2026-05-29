@@ -4,13 +4,16 @@ This service sits behind a trusted main API. Every request must carry:
 
   1. A shared service token (X-API-Key or Authorization: Bearer …) that is
      compared in constant time against the API_TOKEN env var.
-  2. An X-Tenant-ID header (UUID) identifying which tenant the request is
-     acting on. The main API is responsible for authenticating the end user
-     and setting this header.
+  2. An X-Tenant-ID header identifying which tenant the request is acting on.
+     The value is the crazyagents organization ID. The main API is responsible
+     for authenticating the end user and setting this header.
 
 `require_api_key` validates the token, looks the tenant up by id, and
 returns the Tenant ORM object — the same return type the rest of the
 codebase already depends on, so no router changes are required.
+
+`require_service_token` validates only the token — used by provisioning
+endpoints (e.g. POST /tenants) that run before a tenant row exists.
 
 Local-dev escape hatch: with ENVIRONMENT=development AND an empty
 API_TOKEN, the token check falls open so local work isn't blocked. The
@@ -20,7 +23,6 @@ DEFAULT_TENANT_ID is used as a fallback only in that mode.
 
 import hmac
 import logging
-import uuid
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
@@ -62,8 +64,8 @@ def validate_api_token(token: str | None) -> bool:
     return _token_ok(token)
 
 
-def _resolve_tenant_id(x_tenant_id: str | None) -> uuid.UUID:
-    """Parse the X-Tenant-ID header into a UUID.
+def _resolve_tenant_id(x_tenant_id: str | None) -> str:
+    """Extract the X-Tenant-ID header (the crazyagents organization ID).
 
     In development with no header we fall back to DEFAULT_TENANT_ID (if set)
     so local tooling doesn't need to pass the header on every call.
@@ -76,13 +78,7 @@ def _resolve_tenant_id(x_tenant_id: str | None) -> uuid.UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="missing X-Tenant-ID header",
         )
-    try:
-        return uuid.UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-Tenant-ID is not a valid UUID",
-        )
+    return raw.strip()
 
 
 def require_api_key(
@@ -94,7 +90,7 @@ def require_api_key(
     """FastAPI dependency. Authenticate the service call and return the Tenant.
 
     - 401 if the service token is missing or wrong.
-    - 400 if X-Tenant-ID is absent or malformed.
+    - 400 if X-Tenant-ID is absent.
     - 403 if the tenant id resolves to no row.
     """
     from app import models
@@ -114,3 +110,22 @@ def require_api_key(
             detail="unknown tenant",
         )
     return tenant
+
+
+def require_service_token(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None),
+):
+    """FastAPI dependency. Validates only the service token, no tenant lookup.
+
+    Used by provisioning endpoints (e.g. POST /tenants) that run before
+    a tenant row exists.
+
+    - 401 if the service token is missing or wrong.
+    """
+    token = _extract_token(x_api_key, authorization)
+    if not _token_ok(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or missing API token",
+        )

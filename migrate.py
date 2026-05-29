@@ -349,5 +349,51 @@ with engine.connect() as conn:
             ON reservations (tenant_id);
     """))
 
+    # --- tenants.id: UUID → TEXT (use crazyagents org_id as PK directly) ---
+    # Drop all FK constraints that reference tenants.id, change the column
+    # types, then re-add the constraints.
+    conn.execute(text("""
+        DO $$
+        DECLARE
+            r RECORD;
+        BEGIN
+            FOR r IN (
+                SELECT kcu.table_name, tc.constraint_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.referential_constraints rc
+                    ON tc.constraint_name = rc.constraint_name
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                JOIN information_schema.table_constraints ccu
+                    ON rc.unique_constraint_name = ccu.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND ccu.table_name = 'tenants'
+            ) LOOP
+                EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', r.table_name, r.constraint_name);
+            END LOOP;
+        END $$;
+    """))
+
+    conn.execute(text("ALTER TABLE tenants ALTER COLUMN id TYPE TEXT USING id::TEXT;"))
+    conn.execute(text("ALTER TABLE tenants ALTER COLUMN id DROP DEFAULT;"))
+    conn.execute(text("ALTER TABLE tenants ALTER COLUMN agent_tier DROP NOT NULL;"))
+
+    for tbl in (
+        "tenant_files", "workflows", "bots", "chats",
+        "chat_messages", "llm_calls", "rag_sources", "reservations",
+    ):
+        conn.execute(text(
+            f"ALTER TABLE {tbl} ALTER COLUMN tenant_id TYPE TEXT USING tenant_id::TEXT;"
+        ))
+
+    conn.execute(text("ALTER TABLE tenant_files  ADD CONSTRAINT tenant_files_tenant_id_fkey  FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE workflows     ADD CONSTRAINT workflows_tenant_id_fkey     FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE bots          ADD CONSTRAINT bots_tenant_id_fkey          FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE chats         ADD CONSTRAINT chats_tenant_id_fkey         FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE llm_calls     ADD CONSTRAINT llm_calls_tenant_id_fkey     FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE rag_sources   ADD CONSTRAINT rag_sources_tenant_id_fkey   FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE reservations  ADD CONSTRAINT reservations_tenant_id_fkey  FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+
     conn.commit()
     print("Migration complete.")

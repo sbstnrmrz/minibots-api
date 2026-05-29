@@ -7,7 +7,6 @@ right pipeline / fallback path based on bot configuration.
 
 import asyncio
 import logging
-import uuid as _uuid_mod
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -63,7 +62,6 @@ async def handle_chat_turn(
       tenant's default AgentConfig. bot_id is NULL on those rows.
     """
     start_tracking()
-    tenant_uuid = _uuid_mod.UUID(str(tenant_id))
 
     bot_type: str | None = None
     history: list[dict] = []
@@ -79,7 +77,7 @@ async def handle_chat_turn(
                 db.query(models.Bot)
                 .filter(
                     models.Bot.id == bot_id,
-                    models.Bot.tenant_id == tenant_uuid,
+                    models.Bot.tenant_id == tenant_id,
                 )
                 .first()
             )
@@ -96,7 +94,7 @@ async def handle_chat_turn(
                 if chat_id:
                     db.execute(
                         pg_insert(models.Chat.__table__)
-                        .values(id=chat_id, bot_id=bot_id, tenant_id=tenant_uuid)
+                        .values(id=chat_id, bot_id=bot_id, tenant_id=tenant_id)
                         .on_conflict_do_nothing(index_elements=["id"])
                     )
                     db.commit()
@@ -129,7 +127,7 @@ async def handle_chat_turn(
             if chat_id:
                 db.execute(
                     pg_insert(models.Chat.__table__)
-                    .values(id=chat_id, bot_id=None, tenant_id=tenant_uuid)
+                    .values(id=chat_id, bot_id=None, tenant_id=tenant_id)
                     .on_conflict_do_nothing(index_elements=["id"])
                 )
                 db.commit()
@@ -151,7 +149,7 @@ async def handle_chat_turn(
         if bot_id or chat_id:
             db.add(models.ChatMessage(
                 bot_id=bot_id,
-                tenant_id=tenant_uuid,
+                tenant_id=tenant_id,
                 chat_id=chat_id,
                 role="user",
                 content=message,
@@ -202,7 +200,7 @@ async def handle_chat_turn(
 
             model_msg = models.ChatMessage(
                 bot_id=bot_id,
-                tenant_id=tenant_uuid,
+                tenant_id=tenant_id,
                 chat_id=chat_id,
                 role="model",
                 content=reply,
@@ -219,7 +217,7 @@ async def handle_chat_turn(
                 try:
                     for c in usage_calls:
                         db.add(models.LLMCall(
-                            tenant_id=tenant_uuid,
+                            tenant_id=tenant_id,
                             bot_id=bot_id,
                             chat_id=chat_id,
                             chat_message_id=model_msg.id,

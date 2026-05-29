@@ -15,7 +15,7 @@ from app.database import engine
 from app.db_pool import get_pool
 from app.observability import RequestIDMiddleware, configure_logging
 from app.rate_limit import limiter
-from app.routers import agents, bots, chat, chats, documents, products, templates, usage
+from app.routers import agents, bots, chat, chats, documents, products, templates, tenants, usage
 
 configure_logging(json_logs=LOG_JSON)
 logger = logging.getLogger("startup")
@@ -51,6 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(tenants.router)
 app.include_router(bots.router)
 app.include_router(templates.router)
 app.include_router(products.router)
