@@ -59,19 +59,26 @@ class RAGInfoAgent(Agent):
         top_k: int = 5,
         session_id: str | None = None,
         tool_names: list[str] | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         super().__init__(tool_names)
         self._namespace = namespace
         self._system_prompt = system_prompt
         self._top_k = top_k
         self._session_id = session_id
+        self._tenant_id = tenant_id
         self._memory = MemoryStore()
 
     def run(self, ctx: AgentContext) -> AgentContext:
         session_id = ctx.chat_id or self._session_id
         query = ctx.retrieval_query or ctx.input
 
-        chunks = retrieve(query=query, namespace=self._namespace, top_k=self._top_k)
+        chunks = retrieve(
+            query=query,
+            namespace=self._namespace,
+            top_k=self._top_k,
+            tenant_id=self._tenant_id,
+        )
         logger.info(
             "│  rag ▸ namespace=%s  chunks=%d  query: %s",
             self._namespace, len(chunks), query,

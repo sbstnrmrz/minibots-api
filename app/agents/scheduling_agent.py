@@ -430,8 +430,14 @@ class SchedulingAgent(Agent):
         _calendar_id = self._calendar_id
 
         def dispatcher(name: str, args: dict[str, Any]) -> Any:
+            # Server-controlled context is injected here so the model can
+            # never set it (or another tenant's) via tool arguments.
             if name in ("create_event", "book_reservation"):
                 args = {**args, "chat_id": _chat_id, "tenant_id": _tenant_id, "calendar_id": _calendar_id}
+            elif name == "delete_event":
+                args = {**args, "tenant_id": _tenant_id}
+            elif name in ("check_availability", "recommend_slots"):
+                args = {**args, "tenant_id": _tenant_id}
             return base_dispatcher(name, args)
 
         set_agent("SchedulingAgent")

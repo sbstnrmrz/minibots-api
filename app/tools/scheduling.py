@@ -74,11 +74,27 @@ def _parse_iso(ts: str) -> datetime:
     return dt
 
 
-def _count_overlaps(cur, start: datetime, end: datetime) -> int:
-    cur.execute(
-        "SELECT COUNT(*) FROM reservations WHERE cancelled = FALSE AND start_time < %s AND end_time > %s",
-        (end, start),
-    )
+def _count_overlaps(
+    cur, start: datetime, end: datetime, tenant_id: str | None = None
+) -> int:
+    """Count active reservations overlapping [start, end).
+
+    When tenant_id is given, only that tenant's reservations count — one
+    tenant's bookings must never block another tenant's calendar.
+    """
+    if tenant_id is not None:
+        cur.execute(
+            "SELECT COUNT(*) FROM reservations "
+            "WHERE cancelled = FALSE AND tenant_id = %s "
+            "AND start_time < %s AND end_time > %s",
+            (tenant_id, end, start),
+        )
+    else:
+        cur.execute(
+            "SELECT COUNT(*) FROM reservations "
+            "WHERE cancelled = FALSE AND start_time < %s AND end_time > %s",
+            (end, start),
+        )
     return cur.fetchone()[0]
 
 
@@ -134,7 +150,7 @@ def create_event(
     duration_minutes = int((end - start).total_seconds() / 60)
 
     with connection() as conn, conn.cursor() as cur:
-        conflicts = _count_overlaps(cur, start, end)
+        conflicts = _count_overlaps(cur, start, end, tenant_id=tenant_id)
         if conflicts > 0:
             return {
                 "status": "conflict",
@@ -192,8 +208,13 @@ def create_event(
 def delete_event(
     event_id: str,
     calendar_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Delete a Google Calendar event and mark the matching DB reservation as cancelled.
+
+    When tenant_id is provided, the cancel only touches that tenant's row —
+    a tenant must never be able to cancel another tenant's reservation by
+    supplying a foreign gcal_event_id.
 
     Returns {status: "deleted"|"gcal_error"|"not_found", gcal_deleted: bool}.
     """
@@ -205,10 +226,18 @@ def delete_event(
     with connection() as conn, conn.cursor() as cur:
         # Only mark as cancelled if the reservations table exists
         try:
-            cur.execute(
-                "UPDATE reservations SET cancelled = TRUE WHERE gcal_event_id = %s AND cancelled = FALSE",
-                (event_id,),
-            )
+            if tenant_id is not None:
+                cur.execute(
+                    "UPDATE reservations SET cancelled = TRUE "
+                    "WHERE gcal_event_id = %s AND tenant_id = %s AND cancelled = FALSE",
+                    (event_id, tenant_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE reservations SET cancelled = TRUE "
+                    "WHERE gcal_event_id = %s AND cancelled = FALSE",
+                    (event_id,),
+                )
             cancelled_rows = cur.rowcount
         except Exception:
             pass
@@ -248,6 +277,7 @@ def check_availability(
     start_time: str,
     duration_minutes: int,
     buffer_minutes: int = 0,
+    tenant_id: str | None = None,
 ) -> dict:
     """Return {available: bool, conflicts: int} for the requested slot.
 
@@ -266,7 +296,7 @@ def check_availability(
 
     buf = timedelta(minutes=buffer_minutes)
     with connection() as conn, conn.cursor() as cur:
-        count = _count_overlaps(cur, start - buf, end + buf)
+        count = _count_overlaps(cur, start - buf, end + buf, tenant_id=tenant_id)
 
     return {"available": count == 0, "conflicts": count}
 
@@ -276,6 +306,7 @@ def recommend_slots(
     duration_minutes: int,
     buffer_minutes: int = 0,
     excluded_times: list[str] | None = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Return {slots: [ISO datetime strings]} — up to 3 available starting times.
 
@@ -303,7 +334,7 @@ def recommend_slots(
     with connection() as conn, conn.cursor() as cur:
         while cursor_dt <= latest_start:
             end = cursor_dt + timedelta(minutes=duration_minutes)
-            if _count_overlaps(cur, cursor_dt - buf, end + buf) == 0:
+            if _count_overlaps(cur, cursor_dt - buf, end + buf, tenant_id=tenant_id) == 0:
                 candidates.append(cursor_dt)
             cursor_dt += timedelta(hours=1)
 

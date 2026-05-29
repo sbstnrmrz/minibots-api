@@ -298,5 +298,56 @@ with engine.connect() as conn:
             WHERE reservation_code IS NOT NULL;
     """))
 
+    # --- rag_sources: tenant ownership for cross-tenant RAG isolation ---
+    # Alembic-style (when Alembic is wired up):
+    #   op.add_column("rag_sources", sa.Column("tenant_id", postgresql.UUID(as_uuid=True),
+    #                 sa.ForeignKey("tenants.id"), nullable=True))
+    conn.execute(text("""
+        ALTER TABLE rag_sources
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+    """))
+    # Backfill owner from each scope's parent table. After backfill,
+    # retrieve(tenant_id=...) can reject a namespace that isn't the tenant's.
+    #   - "agent"    scope_id → agent_configs.id → tenants.agent_config_id
+    conn.execute(text("""
+        UPDATE rag_sources rs
+        SET tenant_id = t.id
+        FROM tenants t
+        WHERE rs.scope_type = 'agent'
+          AND t.agent_config_id = rs.scope_id
+          AND rs.tenant_id IS NULL;
+    """))
+    #   - "bot"      scope_id → bots.id → bots.tenant_id
+    conn.execute(text("""
+        UPDATE rag_sources rs
+        SET tenant_id = b.tenant_id
+        FROM bots b
+        WHERE rs.scope_type = 'bot'
+          AND b.id = rs.scope_id
+          AND rs.tenant_id IS NULL;
+    """))
+    #   - "workflow" scope_id → workflows.id → workflows.tenant_id
+    conn.execute(text("""
+        UPDATE rag_sources rs
+        SET tenant_id = w.tenant_id
+        FROM workflows w
+        WHERE rs.scope_type = 'workflow'
+          AND w.id = rs.scope_id
+          AND rs.tenant_id IS NULL;
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_rag_sources_tenant
+            ON rag_sources (tenant_id);
+    """))
+
+    # --- reservations: index tenant_id for tenant-scoped overlap/cancel ---
+    # Overlap and cancellation queries now filter on tenant_id so one
+    # tenant's bookings can't block or be cancelled by another.
+    #   op.create_index("ix_reservations_tenant", "reservations", ["tenant_id"])
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_reservations_tenant
+            ON reservations (tenant_id);
+    """))
+
     conn.commit()
     print("Migration complete.")

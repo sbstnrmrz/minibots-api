@@ -108,6 +108,10 @@ class RagSource(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     namespace = Column(String, nullable=False, unique=True)
+    # Owning tenant. Lets retrieve() reject cross-tenant namespace access
+    # without a polymorphic join through the scope owner. Nullable for rows
+    # created before this column existed; backfilled in migrate.py.
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     scope_type = Column(String, nullable=False)  # "bot", "workflow", "agent"
     # scope_id is polymorphic: points to bots.id / workflows.id / agent_configs.id
     # depending on scope_type. No FK constraint (polymorphic pattern).

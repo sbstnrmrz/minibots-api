@@ -30,6 +30,10 @@ from rag.store import (
 logger = logging.getLogger("chat")
 
 
+class BotNotFound(Exception):
+    """Raised when a chat turn names a bot the calling tenant does not own."""
+
+
 class _ConfigSnapshot:
     """Minimal duck type for `_augment_tools_from_links` / `_links_context`.
 
@@ -69,7 +73,21 @@ async def handle_chat_turn(
 
     with db_context() as db:
         if bot_id:
-            bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
+            # Scope the bot to the calling tenant — a tenant must not be able
+            # to drive another tenant's bot by passing a foreign bot_id.
+            bot = (
+                db.query(models.Bot)
+                .filter(
+                    models.Bot.id == bot_id,
+                    models.Bot.tenant_id == tenant_uuid,
+                )
+                .first()
+            )
+            if not bot:
+                # Unknown or cross-tenant bot_id — refuse rather than silently
+                # downgrade to the tenant-default flow (which would persist the
+                # turn against a bot the tenant doesn't own).
+                raise BotNotFound(f"bot {bot_id} not found for this tenant")
             if bot:
                 bot_type = bot.bot_type
                 spreadsheet_id = bot.spreadsheet_id
@@ -151,6 +169,7 @@ async def handle_chat_turn(
             RAGInfoAgent(
                 namespace=rag_namespace,
                 session_id=chat_id or str(bot_id),
+                tenant_id=str(tenant_id),
             ),
         ])
         ctx = AgentContext(input=user_content, chat_id=chat_id)
@@ -159,7 +178,7 @@ async def handle_chat_turn(
         reply = await generate_with_tools(
             contents=contents,
             tools=[make_rag_tool(rag_namespace)],
-            dispatcher=make_rag_dispatcher(rag_namespace),
+            dispatcher=make_rag_dispatcher(rag_namespace, tenant_id=str(tenant_id)),
         )
     elif not bot_id:
         reply = await _handle_tenant_default(
@@ -271,6 +290,7 @@ async def _handle_tenant_default(
             system_prompt=base_prompt + links_ctx,
             session_id=chat_id,
             tool_names=tool_names,
+            tenant_id=str(tenant_id),
         ),
     ])
     ctx = AgentContext(input=user_content, chat_id=chat_id)

@@ -18,6 +18,7 @@ def _ingest_and_register(
     namespace: str,
     scope_type: str,
     scope_id: int,
+    tenant_id,
     db: Session,
 ) -> int:
     init_rag_table(namespace)
@@ -26,8 +27,18 @@ def _ingest_and_register(
     existing = db.query(models.RagSource).filter(
         models.RagSource.namespace == namespace
     ).first()
-    if not existing:
-        db.add(models.RagSource(namespace=namespace, scope_type=scope_type, scope_id=scope_id))
+    if existing:
+        # Keep the owner in sync (backfills rows created before tenant_id existed).
+        if existing.tenant_id is None:
+            existing.tenant_id = tenant_id
+            db.commit()
+    else:
+        db.add(models.RagSource(
+            namespace=namespace,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            tenant_id=tenant_id,
+        ))
         db.commit()
 
     return chunks
@@ -59,6 +70,7 @@ async def upload_bot_document(
             namespace=f"bot_{bot_id}",
             scope_type="bot",
             scope_id=bot_id,
+            tenant_id=current_tenant.id,
             db=db,
         )
     finally:
@@ -96,6 +108,7 @@ async def upload_workflow_document(
             namespace=f"workflow_{workflow_id}",
             scope_type="workflow",
             scope_id=workflow_id,
+            tenant_id=current_tenant.id,
             db=db,
         )
     finally:
@@ -117,6 +130,25 @@ async def upload_agent_document(
     if not agent_config:
         raise HTTPException(status_code=404, detail=f"AgentConfig {agent_config_id} not found.")
 
+    # Ownership: an AgentConfig has no tenant_id column, so verify it is
+    # reachable from the current tenant — either as the tenant's default
+    # config, or as a step in one of the tenant's workflows. Reject (404,
+    # not 403, to avoid confirming existence) anything else.
+    owned = agent_config.id == current_tenant.agent_config_id
+    if not owned:
+        owned = (
+            db.query(models.WorkflowAgent)
+            .join(models.Workflow, models.WorkflowAgent.workflow_id == models.Workflow.id)
+            .filter(
+                models.WorkflowAgent.agent_config_id == agent_config_id,
+                models.Workflow.tenant_id == current_tenant.id,
+            )
+            .first()
+            is not None
+        )
+    if not owned:
+        raise HTTPException(status_code=404, detail=f"AgentConfig {agent_config_id} not found.")
+
     suffix = Path(file.filename).suffix if file.filename else ""
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
@@ -128,6 +160,7 @@ async def upload_agent_document(
             namespace=f"agent_{agent_config_id}",
             scope_type="agent",
             scope_id=agent_config_id,
+            tenant_id=current_tenant.id,
             db=db,
         )
     finally:

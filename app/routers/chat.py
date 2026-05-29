@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app import models
 from app.auth import require_api_key
 from app.schemas.chat import SendMessageRequest, SendMessageResponse
-from app.services.chat_handler import handle_chat_turn
+from app.services.chat_handler import BotNotFound, handle_chat_turn
 
 logger = logging.getLogger("chat_router")
 
@@ -27,6 +27,11 @@ async def send_message(
             bot_id=body.bot_id,
             chat_id=body.chat_id,
             tenant_id=str(current_tenant.id),
+        )
+    except BotNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="bot not found",
         )
     except Exception:
         logger.exception(

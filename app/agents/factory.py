@@ -41,6 +41,7 @@ def _build_agent(
     tool_names: list[str],
     workflow_id: int | None = None,
     db: "_Session | None" = None,
+    tenant_id: str | None = None,
 ) -> Agent:
     config: dict = agent_config.config_json or {}
     agent_type: str = agent_config.agent_type
@@ -70,6 +71,7 @@ def _build_agent(
             system_prompt=base_prompt + links_ctx,
             top_k=config.get("top_k", 5),
             tool_names=tool_names,
+            tenant_id=tenant_id,
         )
 
     if agent_type == "generic_info":
@@ -129,6 +131,7 @@ def build_pipeline(
     workflow = db.query(models.Workflow).filter(models.Workflow.id == workflow_id).first()
     if not workflow:
         raise ValueError(f"Workflow {workflow_id} not found.")
+    workflow_tenant_id = str(workflow.tenant_id) if workflow.tenant_id else None
 
     workflow_agents = (
         db.query(models.WorkflowAgent)
@@ -158,6 +161,9 @@ def build_pipeline(
         )
         tool_names = [t.tool_name for t in tool_rows]
 
-        agents.append(_build_agent(agent_config, tool_names, workflow_id=workflow_id, db=db))
+        agents.append(_build_agent(
+            agent_config, tool_names,
+            workflow_id=workflow_id, db=db, tenant_id=workflow_tenant_id,
+        ))
 
     return Pipeline(agents, memory_store=memory_store)

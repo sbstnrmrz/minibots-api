@@ -7,7 +7,10 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
 API_TOKEN: str = os.getenv("API_TOKEN", "")
-DEFAULT_TENANT_ID: str = os.getenv("DEFAULT_TENANT_ID", "fcbb503a-6e49-4e4c-ac58-fc232064513e")
+# Optional dev-only fallback tenant. No committed default — set it in .env
+# for local work if you don't want to pass X-Tenant-ID on every request.
+# Empty in all other environments so auth never silently resolves a tenant.
+DEFAULT_TENANT_ID: str = os.getenv("DEFAULT_TENANT_ID", "")
 
 # Seconds to wait after each incoming chat message before running the
 # workflow. Additional messages arriving inside this window are
