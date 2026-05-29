@@ -1,10 +1,9 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app import models
 from app.auth import require_api_key
-from app.rate_limit import limiter
 from app.schemas.chat import SendMessageRequest, SendMessageResponse
 from app.services.chat_handler import handle_chat_turn
 
@@ -18,9 +17,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
     response_model=SendMessageResponse,
     status_code=status.HTTP_200_OK,
 )
-@limiter.limit("60/minute")
 async def send_message(
-    request: Request,
     body: SendMessageRequest,
     current_tenant: models.Tenant = Depends(require_api_key),
 ) -> SendMessageResponse:
