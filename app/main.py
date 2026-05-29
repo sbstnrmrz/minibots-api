@@ -14,8 +14,8 @@ from app.database import engine
 from app.db_pool import get_pool
 from app.observability import RequestIDMiddleware, configure_logging
 from app.rate_limit import limiter
-from app.routers import agents, bots, chats, documents, products, templates, usage
-from app.socket import sio, socket_app
+from app.routers import agents, bots, chat, chats, documents, products, templates, usage
+# from app.socket import sio, socket_app  # socket.io — replaced by HTTP /chat/message
 
 configure_logging(json_logs=LOG_JSON)
 logger = logging.getLogger("startup")
@@ -51,7 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/socket.io", socket_app)
+# app.mount("/socket.io", socket_app)  # socket.io — replaced by HTTP /chat/message
 
 app.include_router(bots.router)
 app.include_router(templates.router)
@@ -59,6 +59,7 @@ app.include_router(products.router)
 app.include_router(documents.router)
 app.include_router(agents.router)
 app.include_router(chats.router)
+app.include_router(chat.router)
 app.include_router(usage.router)
 
 

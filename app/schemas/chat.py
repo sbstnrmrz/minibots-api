@@ -10,3 +10,15 @@ class ChatMessageResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SendMessageRequest(BaseModel):
+    content: str
+    role: str = "user"
+    chat_id: str | None = None
+    bot_id: int | None = None
+
+
+class SendMessageResponse(BaseModel):
+    content: str
+    role: str
