@@ -1,8 +1,19 @@
-"""Scheduling tools: check_availability, recommend_slots, book_reservation.
+"""Scheduling tools for the SchedulingAgent.
 
-All functions are synchronous — they run inside call_llm's tool loop, which
-itself runs inside asyncio.to_thread when called from the async socket handler.
-DB access goes through app.db_pool.connection (psycopg, same pool as memory.py).
+All functions are synchronous — they run inside call_llm's tool loop,
+which itself runs inside asyncio.to_thread when called from the async
+socket handler. DB access goes through app.db_pool.connection.
+
+Tool inventory
+--------------
+get_events       — query Google Calendar for events in a time window
+create_event     — create GCal event + persist reservation in DB (fusion of
+                   the old book_reservation)
+delete_event     — delete GCal event by ID + mark reservation cancelled in DB
+inbox_reserve    — placeholder notification hook (stub, always succeeds)
+check_availability — DB-based slot availability check (kept for compatibility)
+recommend_slots    — DB-based slot recommendation (kept for compatibility)
+book_reservation   — alias of create_event kept for existing workflows
 """
 
 import logging
@@ -30,6 +41,7 @@ CREATE TABLE IF NOT EXISTS reservations (
     duration_minutes INTEGER     NOT NULL,
     gcal_event_id    VARCHAR,
     gcal_sync_error  VARCHAR,
+    cancelled        BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_reservations_time_range
@@ -62,22 +74,210 @@ def _parse_iso(ts: str) -> datetime:
     return dt
 
 
-def _count_overlaps(cur, start: datetime, end: datetime) -> int:
-    cur.execute(
-        "SELECT COUNT(*) FROM reservations WHERE start_time < %s AND end_time > %s",
-        (end, start),
-    )
+def _count_overlaps(
+    cur, start: datetime, end: datetime, tenant_id: str | None = None
+) -> int:
+    """Count active reservations overlapping [start, end).
+
+    When tenant_id is given, only that tenant's reservations count — one
+    tenant's bookings must never block another tenant's calendar.
+    """
+    if tenant_id is not None:
+        cur.execute(
+            "SELECT COUNT(*) FROM reservations "
+            "WHERE cancelled = FALSE AND tenant_id = %s "
+            "AND start_time < %s AND end_time > %s",
+            (tenant_id, end, start),
+        )
+    else:
+        cur.execute(
+            "SELECT COUNT(*) FROM reservations "
+            "WHERE cancelled = FALSE AND start_time < %s AND end_time > %s",
+            (end, start),
+        )
     return cur.fetchone()[0]
 
 
 # ---------------------------------------------------------------------------
-# Public tool functions
+# GCal-native tools (new prompt interface)
+# ---------------------------------------------------------------------------
+
+def get_events(
+    calendar_id: str,
+    time_min: str,
+    time_max: str,
+) -> dict:
+    """Return events from a Google Calendar between two ISO datetimes.
+
+    Returns {events: [{id, summary, description, start, end, hangoutLink}]}.
+    Returns empty list when GCal is not configured (development mode).
+    """
+    from app.services.gcal import list_events
+
+    t_min = _parse_iso(time_min)
+    t_max = _parse_iso(time_max)
+    events = list_events(calendar_id=calendar_id, time_min=t_min, time_max=t_max)
+    return {"events": events}
+
+
+def create_event(
+    summary: str,
+    start_time: str,
+    end_time: str,
+    description: str = "",
+    calendar_id: str | None = None,
+    booker_name: str = "",
+    booker_contact: str = "",
+    service: str = "",
+    reservation_code: str = "",
+    chat_id: str | None = None,
+    tenant_id: str | None = None,
+) -> dict:
+    """Create a Google Calendar event and persist the reservation in the DB.
+
+    This is the fused version of the old book_reservation + gcal.create_event.
+    Returns {status, reservation_id, gcal_event_id, hangout_link}.
+    """
+    _ensure_table_once()
+
+    start = _parse_iso(start_time)
+    end = _parse_iso(end_time)
+    if start >= end:
+        raise ValueError("end_time must be after start_time.")
+    if start <= datetime.now(tz=start.tzinfo):
+        raise ValueError("Cannot book a slot in the past.")
+
+    duration_minutes = int((end - start).total_seconds() / 60)
+
+    with connection() as conn, conn.cursor() as cur:
+        conflicts = _count_overlaps(cur, start, end, tenant_id=tenant_id)
+        if conflicts > 0:
+            return {
+                "status": "conflict",
+                "message": "That slot is no longer available. Please choose another time.",
+            }
+
+        cur.execute(
+            """
+            INSERT INTO reservations
+                (tenant_id, chat_id, booker_name, booker_contact, service,
+                 start_time, end_time, duration_minutes, reservation_code)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (tenant_id, chat_id, booker_name or "", booker_contact or "",
+             service or summary, start, end, duration_minutes,
+             reservation_code or None),
+        )
+        reservation_id: int = cur.fetchone()[0]
+
+    gcal_event_id: str | None = None
+    hangout_link: str | None = None
+    gcal_error: str | None = None
+    try:
+        from app.services.gcal import create_event as _gcal_create
+        event = _gcal_create(
+            summary=summary,
+            start_time=start,
+            end_time=end,
+            description=description,
+            calendar_id=calendar_id,
+        )
+        if event:
+            gcal_event_id = event.get("id") or None
+            hangout_link = event.get("hangoutLink") or None
+    except Exception as e:
+        gcal_error = str(e)
+        logger.warning("GCal sync failed for reservation %d: %s", reservation_id, e)
+
+    if gcal_event_id is not None or gcal_error is not None:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE reservations SET gcal_event_id = %s, gcal_sync_error = %s WHERE id = %s",
+                (gcal_event_id, gcal_error, reservation_id),
+            )
+
+    return {
+        "status": "confirmed",
+        "reservation_id": reservation_id,
+        "gcal_event_id": gcal_event_id,
+        "hangout_link": hangout_link,
+    }
+
+
+def delete_event(
+    event_id: str,
+    calendar_id: str | None = None,
+    tenant_id: str | None = None,
+) -> dict:
+    """Delete a Google Calendar event and mark the matching DB reservation as cancelled.
+
+    When tenant_id is provided, the cancel only touches that tenant's row —
+    a tenant must never be able to cancel another tenant's reservation by
+    supplying a foreign gcal_event_id.
+
+    Returns {status: "deleted"|"gcal_error"|"not_found", gcal_deleted: bool}.
+    """
+    from app.services.gcal import delete_event_by_id
+
+    gcal_deleted = delete_event_by_id(event_id=event_id, calendar_id=calendar_id)
+
+    cancelled_rows = 0
+    with connection() as conn, conn.cursor() as cur:
+        # Only mark as cancelled if the reservations table exists
+        try:
+            if tenant_id is not None:
+                cur.execute(
+                    "UPDATE reservations SET cancelled = TRUE "
+                    "WHERE gcal_event_id = %s AND tenant_id = %s AND cancelled = FALSE",
+                    (event_id, tenant_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE reservations SET cancelled = TRUE "
+                    "WHERE gcal_event_id = %s AND cancelled = FALSE",
+                    (event_id,),
+                )
+            cancelled_rows = cur.rowcount
+        except Exception:
+            pass
+
+    return {
+        "status": "deleted" if gcal_deleted else "gcal_error",
+        "gcal_deleted": gcal_deleted,
+        "db_rows_cancelled": cancelled_rows,
+    }
+
+
+def inbox_reserve(
+    booker_name: str = "",
+    service: str = "",
+    start_time: str = "",
+    reservation_code: str = "",
+    extras: str = "",
+    notes: str = "",
+) -> dict:
+    """Notify the business inbox about a new or modified reservation.
+
+    Stub — always returns success. Replace the body with real notification
+    logic (email, WhatsApp, Slack, etc.) when ready.
+    """
+    logger.info(
+        "inbox_reserve stub called: booker=%s service=%s start=%s code=%s",
+        booker_name, service, start_time, reservation_code,
+    )
+    return {"status": "ok", "notified": False}
+
+
+# ---------------------------------------------------------------------------
+# DB-native tools (kept for backwards compatibility)
 # ---------------------------------------------------------------------------
 
 def check_availability(
     start_time: str,
     duration_minutes: int,
     buffer_minutes: int = 0,
+    tenant_id: str | None = None,
 ) -> dict:
     """Return {available: bool, conflicts: int} for the requested slot.
 
@@ -94,10 +294,9 @@ def check_availability(
         raise ValueError("Cannot book a slot in the past.")
     end = start + timedelta(minutes=duration_minutes)
 
-    # Expand the checked window by the buffer on both sides
     buf = timedelta(minutes=buffer_minutes)
     with connection() as conn, conn.cursor() as cur:
-        count = _count_overlaps(cur, start - buf, end + buf)
+        count = _count_overlaps(cur, start - buf, end + buf, tenant_id=tenant_id)
 
     return {"available": count == 0, "conflicts": count}
 
@@ -107,6 +306,7 @@ def recommend_slots(
     duration_minutes: int,
     buffer_minutes: int = 0,
     excluded_times: list[str] | None = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Return {slots: [ISO datetime strings]} — up to 3 available starting times.
 
@@ -134,7 +334,7 @@ def recommend_slots(
     with connection() as conn, conn.cursor() as cur:
         while cursor_dt <= latest_start:
             end = cursor_dt + timedelta(minutes=duration_minutes)
-            if _count_overlaps(cur, cursor_dt - buf, end + buf) == 0:
+            if _count_overlaps(cur, cursor_dt - buf, end + buf, tenant_id=tenant_id) == 0:
                 candidates.append(cursor_dt)
             cursor_dt += timedelta(hours=1)
 
@@ -159,70 +359,155 @@ def book_reservation(
     tenant_id: str | None = None,
     calendar_id: str | None = None,
 ) -> dict:
-    """Persist a confirmed reservation. Returns {status, reservation_id, gcal_event_id}."""
-    _ensure_table_once()
+    """Persist a confirmed reservation. Alias of create_event for existing workflows.
+
+    Returns {status, reservation_id, gcal_event_id}.
+    """
     if duration_minutes <= 0:
         raise ValueError("duration_minutes must be positive.")
     start = _parse_iso(start_time)
-    if start <= datetime.now(tz=start.tzinfo):
-        raise ValueError("Cannot book a slot in the past.")
     end = start + timedelta(minutes=duration_minutes)
-
-    with connection() as conn, conn.cursor() as cur:
-        # Atomic overlap re-check before insert
-        conflicts = _count_overlaps(cur, start, end)
-        if conflicts > 0:
-            return {
-                "status": "conflict",
-                "message": "That slot is no longer available. Please choose another time.",
-            }
-
-        cur.execute(
-            """
-            INSERT INTO reservations
-                (tenant_id, chat_id, booker_name, booker_contact, service,
-                 start_time, end_time, duration_minutes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (tenant_id, chat_id, booker_name, booker_contact or "",
-             service or "", start, end, duration_minutes),
-        )
-        reservation_id: int = cur.fetchone()[0]
-
-    # Best-effort GCal sync — DB row is already committed; never roll back on failure
-    gcal_event_id: str | None = None
-    gcal_error: str | None = None
-    try:
-        from app.services.gcal import create_event
-        gcal_event_id = create_event(
-            summary=f"{service} — {booker_name}",
-            start_time=start,
-            end_time=end,
-            description=f"Contact: {booker_contact}" if booker_contact else "",
-            calendar_id=calendar_id,
-        )
-    except Exception as e:
-        gcal_error = str(e)
-        logger.warning("GCal sync failed for reservation %d: %s", reservation_id, e)
-
-    if gcal_event_id is not None or gcal_error is not None:
-        with connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "UPDATE reservations SET gcal_event_id = %s, gcal_sync_error = %s WHERE id = %s",
-                (gcal_event_id, gcal_error, reservation_id),
-            )
-
-    return {
-        "status": "confirmed",
-        "reservation_id": reservation_id,
-        "gcal_event_id": gcal_event_id,
-    }
+    result = create_event(
+        summary=f"{service} — {booker_name}",
+        start_time=start.isoformat(),
+        end_time=end.isoformat(),
+        description=f"Contact: {booker_contact}" if booker_contact else "",
+        calendar_id=calendar_id,
+        booker_name=booker_name,
+        booker_contact=booker_contact,
+        service=service,
+        chat_id=chat_id,
+        tenant_id=tenant_id,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
 # OpenAI tool declarations
 # ---------------------------------------------------------------------------
+
+GET_EVENTS_TOOL = to_openai_tool(
+    name="get_events",
+    description=(
+        "Query a Google Calendar for events in a given time window. "
+        "Use this to check availability, find existing reservations by code, "
+        "or inspect the schedule before creating or modifying a booking. "
+        "Returns {events: [{id, summary, description, start, end, hangoutLink}]}."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "calendar_id": {
+                "type": "string",
+                "description": "Google Calendar ID to query (e.g. 'abc@group.calendar.google.com').",
+            },
+            "time_min": {
+                "type": "string",
+                "description": "ISO 8601 datetime — start of the search window.",
+            },
+            "time_max": {
+                "type": "string",
+                "description": "ISO 8601 datetime — end of the search window.",
+            },
+        },
+        "required": ["calendar_id", "time_min", "time_max"],
+    },
+)
+
+CREATE_EVENT_TOOL = to_openai_tool(
+    name="create_event",
+    description=(
+        "Create a Google Calendar event and persist the reservation in the database. "
+        "Call ONLY after the user has explicitly confirmed all details. "
+        "Returns {status, reservation_id, gcal_event_id, hangout_link}."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Event title, e.g. 'Reserva Sala Ideas - Juan Pérez - #A3K9P2'.",
+            },
+            "start_time": {
+                "type": "string",
+                "description": "ISO 8601 datetime with timezone for the event start.",
+            },
+            "end_time": {
+                "type": "string",
+                "description": "ISO 8601 datetime with timezone for the event end.",
+            },
+            "description": {
+                "type": "string",
+                "description": "Event description with reservation details (code, name, ID, phone, email, extras).",
+            },
+            "calendar_id": {
+                "type": "string",
+                "description": "Google Calendar ID of the resource to book.",
+            },
+            "booker_name": {
+                "type": "string",
+                "description": "Full name of the person making the booking.",
+            },
+            "booker_contact": {
+                "type": "string",
+                "description": "Phone or email of the booker.",
+            },
+            "service": {
+                "type": "string",
+                "description": "Name of the resource or service being reserved.",
+            },
+            "reservation_code": {
+                "type": "string",
+                "description": "6-character alphanumeric code generated for this reservation (e.g. 'A3K9P2').",
+            },
+        },
+        "required": ["summary", "start_time", "end_time"],
+    },
+)
+
+DELETE_EVENT_TOOL = to_openai_tool(
+    name="delete_event",
+    description=(
+        "Delete a Google Calendar event by its ID and mark the matching reservation "
+        "as cancelled in the database. Use for cancellations and when replacing an event "
+        "during a modification (delete old → create new). "
+        "Returns {status, gcal_deleted, db_rows_cancelled}."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "event_id": {
+                "type": "string",
+                "description": "Google Calendar event ID to delete.",
+            },
+            "calendar_id": {
+                "type": "string",
+                "description": "Google Calendar ID where the event lives.",
+            },
+        },
+        "required": ["event_id"],
+    },
+)
+
+INBOX_RESERVE_TOOL = to_openai_tool(
+    name="inbox_reserve",
+    description=(
+        "Notify the business inbox about a new or modified reservation. "
+        "Call after create_event succeeds. Always returns {status: 'ok'}."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "booker_name": {"type": "string", "description": "Full name of the booker."},
+            "service": {"type": "string", "description": "Resource or service reserved."},
+            "start_time": {"type": "string", "description": "ISO 8601 start datetime."},
+            "reservation_code": {"type": "string", "description": "6-character alphanumeric code."},
+            "extras": {"type": "string", "description": "Comma-separated extras selected."},
+            "notes": {"type": "string", "description": "Any additional notes."},
+        },
+        "required": [],
+    },
+)
 
 CHECK_AVAILABILITY_TOOL = to_openai_tool(
     name="check_availability",
@@ -299,7 +584,8 @@ BOOK_RESERVATION_TOOL = to_openai_tool(
     description=(
         "Persist a confirmed reservation to the database and sync to Google Calendar. "
         "Call ONLY after the user has explicitly confirmed the slot, their name, and the service. "
-        "Returns {status, reservation_id, gcal_event_id}."
+        "Returns {status, reservation_id, gcal_event_id}. "
+        "Prefer create_event for new workflows."
     ),
     parameters={
         "type": "object",

@@ -212,8 +212,12 @@ async def analyze(
         try:
             async for chunk in agent.analyze_sections_async(json.dumps(normalized)):
                 yield json.dumps(chunk, ensure_ascii=False) + "\n"
-        except Exception as e:
-            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
+        except Exception:
+            # Log internally; never stream the raw exception text to the client.
+            logger.exception("analyze stream failed for tenant_id=%s", tenant_id)
+            yield json.dumps(
+                {"type": "error", "message": "analysis failed"}, ensure_ascii=False
+            ) + "\n"
         finally:
             # Persist all accumulated LLM usage after the stream completes.
             try:
@@ -347,11 +351,13 @@ async def setup(
     if existing_source:
         existing_source.scope_type = "agent"
         existing_source.scope_id = agent_config.id
+        existing_source.tenant_id = current_tenant.id
     else:
         db.add(models.RagSource(
             namespace=namespace,
             scope_type="agent",
             scope_id=agent_config.id,
+            tenant_id=current_tenant.id,
         ))
 
     # Always clear + re-ingest links (fast; reflects current link list).

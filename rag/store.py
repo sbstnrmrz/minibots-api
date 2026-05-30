@@ -186,22 +186,58 @@ def make_rag_tool(namespace: str) -> dict:
     return _RAG_TOOL_DECLARATION
 
 
-def make_rag_dispatcher(namespace: str) -> Callable[[str, dict[str, Any]], Any]:
+def make_rag_dispatcher(
+    namespace: str, tenant_id: str | None = None
+) -> Callable[[str, dict[str, Any]], Any]:
     _validate_namespace(namespace)
 
     def dispatcher(name: str, args: dict[str, Any]) -> Any:
         if name == "retrieve_documents":
-            results = retrieve(args["query"], namespace, top_k=args.get("top_k", 5))
+            results = retrieve(
+                args["query"], namespace, top_k=args.get("top_k", 5), tenant_id=tenant_id
+            )
             return [{"content": r["content"], "similarity_score": r["similarity_score"]} for r in results]
         raise ValueError(f"Unknown tool: '{name}'")
 
     return dispatcher
 
 
-def retrieve(query: str, namespace: str, top_k: int = 5) -> list[dict]:
+def _assert_namespace_owned_by(cur, namespace: str, tenant_id: str) -> None:
+    """Raise PermissionError unless `namespace` is registered to `tenant_id`.
+
+    Rows in rag_sources predating the tenant_id column have a NULL owner;
+    those are treated as not-yet-attributable and rejected so we never serve
+    chunks across a tenant boundary. Backfill runs in migrate.py.
+    """
+    cur.execute(
+        "SELECT tenant_id FROM rag_sources WHERE namespace = %s LIMIT 1",
+        (namespace,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise PermissionError(f"Namespace '{namespace}' is not registered.")
+    owner = row[0]
+    if owner is None or str(owner) != str(tenant_id):
+        raise PermissionError(
+            f"Namespace '{namespace}' does not belong to the requesting tenant."
+        )
+
+
+def retrieve(
+    query: str, namespace: str, top_k: int = 5, tenant_id: str | None = None
+) -> list[dict]:
+    """Cosine-similarity search within a namespace.
+
+    When `tenant_id` is provided, the namespace must be registered to that
+    tenant in rag_sources or a PermissionError is raised — this stops one
+    tenant from reading another tenant's knowledge base by guessing a
+    namespace (e.g. 'bot_5').
+    """
     _validate_namespace(namespace)
 
     with _connect() as conn, conn.cursor() as cur:
+        if tenant_id is not None:
+            _assert_namespace_owned_by(cur, namespace, tenant_id)
         cur.execute(
             "SELECT EXISTS (SELECT 1 FROM rag_chunks WHERE namespace = %s LIMIT 1)",
             (namespace,),

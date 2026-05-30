@@ -28,6 +28,7 @@ Adding a new provider: add one entry to `LLMProvider` and one entry to
 `_PROVIDER_SETTINGS` — nothing else changes.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -241,9 +242,12 @@ async def acall_llm(
     """Async variant of `call_llm`.
 
     Uses `openai.AsyncOpenAI` so the request handler never has to park a
-    thread waiting on the provider. The tool dispatcher remains
-    synchronous — sandbox the tool body or `run_in_executor` from it if
-    a tool itself does blocking I/O.
+    thread waiting on the provider.
+
+    A synchronous dispatcher (the common case — RAG retrieval embeds the
+    query over a blocking HTTP call, sheets/CSV tools do blocking I/O) is
+    run in a worker thread via `asyncio.to_thread` so it never stalls the
+    event loop. An `async def` dispatcher is awaited directly.
     """
     if tools and dispatcher is None:
         raise ValueError("`tools` supplied without a `dispatcher` to execute them.")
@@ -314,7 +318,7 @@ async def acall_llm(
             try:
                 args = json.loads(tc.function.arguments or "{}")
                 logger.info("   → tool %s(%s)", tc.function.name, args)
-                result = dispatcher(tc.function.name, args)  # type: ignore[misc]
+                result = await _run_dispatcher_async(dispatcher, tc.function.name, args)
                 logger.info("   ← tool %s: %s", tc.function.name, _preview(result))
             except Exception as e:
                 result = {"error": str(e)}
@@ -324,6 +328,24 @@ async def acall_llm(
                 "tool_call_id": tc.id,
                 "content": json.dumps(result, default=str),
             })
+
+
+async def _run_dispatcher_async(
+    dispatcher: Callable[[str, dict[str, Any]], Any],
+    name: str,
+    args: dict[str, Any],
+) -> Any:
+    """Run a tool dispatcher from async code without blocking the event loop.
+
+    - An `async def` dispatcher is awaited directly.
+    - A synchronous dispatcher (the common case — RAG retrieval embeds the
+      query over blocking HTTP, sheets/CSV tools do blocking I/O) is run in
+      a worker thread via `asyncio.to_thread`, so a slow tool no longer
+      stalls every other in-flight request sharing the loop.
+    """
+    if asyncio.iscoroutinefunction(dispatcher):
+        return await dispatcher(name, args)  # type: ignore[misc]
+    return await asyncio.to_thread(dispatcher, name, args)
 
 
 def embed(

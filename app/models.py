@@ -16,10 +16,11 @@ class AgentTier(str, enum.Enum):
 class Tenant(Base):
     __tablename__ = "tenants"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # id is the crazyagents organization ID — no default, must be supplied by caller
+    id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     slug = Column(String, nullable=False, unique=True)
-    agent_tier = Column(Enum(AgentTier), nullable=False)
+    agent_tier = Column(Enum(AgentTier), nullable=True)
     agent_config_id = Column(Integer, ForeignKey("agent_configs.id"), nullable=True)
     contact_name = Column(String, nullable=True)
     contact_phone = Column(String, nullable=True)
@@ -38,7 +39,7 @@ class TenantFile(Base):
     __tablename__ = "tenant_files"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
     agent_config_id = Column(Integer, ForeignKey("agent_configs.id"), nullable=True)
     filename = Column(String, nullable=False)
     content_type = Column(String, nullable=False)
@@ -66,7 +67,7 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -108,6 +109,10 @@ class RagSource(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     namespace = Column(String, nullable=False, unique=True)
+    # Owning tenant. Lets retrieve() reject cross-tenant namespace access
+    # without a polymorphic join through the scope owner. Nullable for rows
+    # created before this column existed; backfilled in migrate.py.
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=True)
     scope_type = Column(String, nullable=False)  # "bot", "workflow", "agent"
     # scope_id is polymorphic: points to bots.id / workflows.id / agent_configs.id
     # depending on scope_type. No FK constraint (polymorphic pattern).
@@ -120,7 +125,7 @@ class Bot(Base):
     __tablename__ = "bots"
 
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
     name = Column(String, nullable=False)
     bot_type = Column(String, nullable=False, server_default="rag_info")
     spreadsheet_id = Column(String, nullable=True)
@@ -132,7 +137,7 @@ class Chat(Base):
 
     id = Column(String, primary_key=True)
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)   # nullable: tenant-default chats have no bot
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -144,7 +149,7 @@ class ChatMessage(Base):
     # query performance (avoids a JOIN when filtering messages by bot or
     # tenant directly). Must stay in sync with the parent Chat row.
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)   # nullable: tenant-default chats have no bot
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
     chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
     role = Column(String, nullable=False)  # "user" or "model"
     content = Column(String, nullable=False)
@@ -161,7 +166,7 @@ class LLMCall(Base):
     __tablename__ = "llm_calls"
 
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True)
     chat_id = Column(String, ForeignKey("chats.id"), nullable=True)
     chat_message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=True)

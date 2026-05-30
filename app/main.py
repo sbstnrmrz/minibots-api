@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -14,8 +15,7 @@ from app.database import engine
 from app.db_pool import get_pool
 from app.observability import RequestIDMiddleware, configure_logging
 from app.rate_limit import limiter
-from app.routers import agents, bots, chats, documents, products, templates, usage
-from app.socket import sio, socket_app
+from app.routers import agents, bots, chat, chats, documents, products, templates, tenants, usage
 
 configure_logging(json_logs=LOG_JSON)
 logger = logging.getLogger("startup")
@@ -51,14 +51,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/socket.io", socket_app)
-
+app.include_router(tenants.router)
 app.include_router(bots.router)
 app.include_router(templates.router)
 app.include_router(products.router)
 app.include_router(documents.router)
 app.include_router(agents.router)
 app.include_router(chats.router)
+app.include_router(chat.router)
 app.include_router(usage.router)
 
 
@@ -80,6 +80,8 @@ def readyz():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return {"status": "ready"}
-    except Exception as e:
+    except Exception:
+        # Log the detail server-side; never echo the raw exception (DSN,
+        # host, driver internals) to an unauthenticated probe.
         logger.exception("readiness check failed")
-        return {"status": "degraded", "error": str(e)}
+        return JSONResponse(status_code=503, content={"status": "degraded"})

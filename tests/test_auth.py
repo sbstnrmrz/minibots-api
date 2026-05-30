@@ -1,43 +1,85 @@
 """Auth dependency behaviour.
 
-Auth is currently a single-tenant stub — require_api_key always resolves
-to DEFAULT_TENANT_ID. These tests verify the stub and the helper
-functions that will be used when per-tenant auth is re-enabled.
+require_api_key validates a shared service token (constant-time) and
+resolves the tenant from the X-Tenant-ID header. These tests exercise the
+pure helpers; the DB lookup is covered by the live route tests.
 """
 
+import uuid
+
 import pytest
+from fastapi import HTTPException
 
-from app.auth import get_tenant_by_token, validate_api_token
-
-
-def test_validate_api_token_always_true():
-    # Auth stub: all tokens accepted while auth is disabled
-    assert validate_api_token(None) is True
-    assert validate_api_token("any-token") is True
+import app.auth as auth_mod
+from app.auth import _extract_token, _resolve_tenant_id, _token_ok, validate_api_token
 
 
-def test_get_tenant_by_token_returns_none_without_token():
-    # No DB needed — short-circuits on None
-    assert get_tenant_by_token(None, db=None) is None  # type: ignore[arg-type]
+def _set(monkeypatch, *, token: str, env: str, default_tenant: str = ""):
+    monkeypatch.setattr(auth_mod, "API_TOKEN", token)
+    monkeypatch.setattr(auth_mod, "ENVIRONMENT", env)
+    monkeypatch.setattr(auth_mod, "DEFAULT_TENANT_ID", default_tenant)
 
 
-def test_x_api_key_accepted():
-    # Kept as a smoke test — stub accepts any header value (200 via live route)
-    pass
+def test_extract_token_prefers_x_api_key():
+    assert _extract_token("k1", "Bearer k2") == "k1"
 
 
-def test_bearer_accepted():
-    pass
+def test_extract_token_reads_bearer():
+    assert _extract_token(None, "Bearer abc") == "abc"
+    assert _extract_token(None, "bearer abc") == "abc"
 
 
-def test_missing_token_rejected_in_production():
-    # Will be re-enabled when auth is turned on
-    pytest.skip("auth disabled — re-enable when AUTH_ENABLED=true")
+def test_extract_token_none_when_absent():
+    assert _extract_token(None, None) is None
+    assert _extract_token(None, "Basic xyz") is None
 
 
-def test_wrong_token_rejected():
-    pytest.skip("auth disabled — re-enable when AUTH_ENABLED=true")
+def test_token_ok_constant_time_match(monkeypatch):
+    _set(monkeypatch, token="secret", env="production")
+    assert _token_ok("secret") is True
+    assert _token_ok("wrong") is False
+    assert _token_ok(None) is False
 
 
-def test_dev_open_when_no_token_set():
-    pytest.skip("auth disabled — stub is always open")
+def test_token_rejected_in_production_when_unset(monkeypatch):
+    _set(monkeypatch, token="", env="production")
+    assert _token_ok("anything") is False
+    assert _token_ok(None) is False
+
+
+def test_dev_open_when_no_token_set(monkeypatch):
+    _set(monkeypatch, token="", env="development")
+    assert _token_ok(None) is True
+    assert _token_ok("anything") is True
+
+
+def test_validate_api_token_matches_token_ok(monkeypatch):
+    _set(monkeypatch, token="secret", env="production")
+    assert validate_api_token("secret") is True
+    assert validate_api_token("nope") is False
+
+
+def test_resolve_tenant_id_parses_uuid(monkeypatch):
+    _set(monkeypatch, token="x", env="production")
+    tid = uuid.uuid4()
+    assert _resolve_tenant_id(str(tid)) == tid
+
+
+def test_resolve_tenant_id_missing_header(monkeypatch):
+    _set(monkeypatch, token="x", env="production")
+    with pytest.raises(HTTPException) as exc:
+        _resolve_tenant_id(None)
+    assert exc.value.status_code == 400
+
+
+def test_resolve_tenant_id_bad_uuid(monkeypatch):
+    _set(monkeypatch, token="x", env="production")
+    with pytest.raises(HTTPException) as exc:
+        _resolve_tenant_id("not-a-uuid")
+    assert exc.value.status_code == 400
+
+
+def test_resolve_tenant_id_dev_fallback(monkeypatch):
+    fallback = str(uuid.uuid4())
+    _set(monkeypatch, token="", env="development", default_tenant=fallback)
+    assert str(_resolve_tenant_id(None)) == fallback

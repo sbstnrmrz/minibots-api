@@ -286,5 +286,114 @@ with engine.connect() as conn:
         END $$;
     """))
 
+    # --- reservations: cancelled flag + reservation_code ---
+    conn.execute(text("""
+        ALTER TABLE reservations
+            ADD COLUMN IF NOT EXISTS cancelled         BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS reservation_code VARCHAR;
+    """))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_reservations_code
+            ON reservations (reservation_code)
+            WHERE reservation_code IS NOT NULL;
+    """))
+
+    # --- rag_sources: tenant ownership for cross-tenant RAG isolation ---
+    # Alembic-style (when Alembic is wired up):
+    #   op.add_column("rag_sources", sa.Column("tenant_id", postgresql.UUID(as_uuid=True),
+    #                 sa.ForeignKey("tenants.id"), nullable=True))
+    conn.execute(text("""
+        ALTER TABLE rag_sources
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
+    """))
+    # Backfill owner from each scope's parent table. After backfill,
+    # retrieve(tenant_id=...) can reject a namespace that isn't the tenant's.
+    #   - "agent"    scope_id → agent_configs.id → tenants.agent_config_id
+    conn.execute(text("""
+        UPDATE rag_sources rs
+        SET tenant_id = t.id
+        FROM tenants t
+        WHERE rs.scope_type = 'agent'
+          AND t.agent_config_id = rs.scope_id
+          AND rs.tenant_id IS NULL;
+    """))
+    #   - "bot"      scope_id → bots.id → bots.tenant_id
+    conn.execute(text("""
+        UPDATE rag_sources rs
+        SET tenant_id = b.tenant_id
+        FROM bots b
+        WHERE rs.scope_type = 'bot'
+          AND b.id = rs.scope_id
+          AND rs.tenant_id IS NULL;
+    """))
+    #   - "workflow" scope_id → workflows.id → workflows.tenant_id
+    conn.execute(text("""
+        UPDATE rag_sources rs
+        SET tenant_id = w.tenant_id
+        FROM workflows w
+        WHERE rs.scope_type = 'workflow'
+          AND w.id = rs.scope_id
+          AND rs.tenant_id IS NULL;
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_rag_sources_tenant
+            ON rag_sources (tenant_id);
+    """))
+
+    # --- reservations: index tenant_id for tenant-scoped overlap/cancel ---
+    # Overlap and cancellation queries now filter on tenant_id so one
+    # tenant's bookings can't block or be cancelled by another.
+    #   op.create_index("ix_reservations_tenant", "reservations", ["tenant_id"])
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_reservations_tenant
+            ON reservations (tenant_id);
+    """))
+
+    # --- tenants.id: UUID → TEXT (use crazyagents org_id as PK directly) ---
+    # Drop all FK constraints that reference tenants.id, change the column
+    # types, then re-add the constraints.
+    conn.execute(text("""
+        DO $$
+        DECLARE
+            r RECORD;
+        BEGIN
+            FOR r IN (
+                SELECT kcu.table_name, tc.constraint_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.referential_constraints rc
+                    ON tc.constraint_name = rc.constraint_name
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                JOIN information_schema.table_constraints ccu
+                    ON rc.unique_constraint_name = ccu.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND ccu.table_name = 'tenants'
+            ) LOOP
+                EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', r.table_name, r.constraint_name);
+            END LOOP;
+        END $$;
+    """))
+
+    conn.execute(text("ALTER TABLE tenants ALTER COLUMN id TYPE TEXT USING id::TEXT;"))
+    conn.execute(text("ALTER TABLE tenants ALTER COLUMN id DROP DEFAULT;"))
+    conn.execute(text("ALTER TABLE tenants ALTER COLUMN agent_tier DROP NOT NULL;"))
+
+    for tbl in (
+        "tenant_files", "workflows", "bots", "chats",
+        "chat_messages", "llm_calls", "rag_sources", "reservations",
+    ):
+        conn.execute(text(
+            f"ALTER TABLE {tbl} ALTER COLUMN tenant_id TYPE TEXT USING tenant_id::TEXT;"
+        ))
+
+    conn.execute(text("ALTER TABLE tenant_files  ADD CONSTRAINT tenant_files_tenant_id_fkey  FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE workflows     ADD CONSTRAINT workflows_tenant_id_fkey     FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE bots          ADD CONSTRAINT bots_tenant_id_fkey          FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE chats         ADD CONSTRAINT chats_tenant_id_fkey         FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE llm_calls     ADD CONSTRAINT llm_calls_tenant_id_fkey     FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE rag_sources   ADD CONSTRAINT rag_sources_tenant_id_fkey   FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+    conn.execute(text("ALTER TABLE reservations  ADD CONSTRAINT reservations_tenant_id_fkey  FOREIGN KEY (tenant_id) REFERENCES tenants(id);"))
+
     conn.commit()
     print("Migration complete.")

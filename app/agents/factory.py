@@ -41,6 +41,7 @@ def _build_agent(
     tool_names: list[str],
     workflow_id: int | None = None,
     db: "_Session | None" = None,
+    tenant_id: str | None = None,
 ) -> Agent:
     config: dict = agent_config.config_json or {}
     agent_type: str = agent_config.agent_type
@@ -70,6 +71,7 @@ def _build_agent(
             system_prompt=base_prompt + links_ctx,
             top_k=config.get("top_k", 5),
             tool_names=tool_names,
+            tenant_id=tenant_id,
         )
 
     if agent_type == "generic_info":
@@ -96,6 +98,7 @@ def _build_agent(
         from app.agents.scheduling_agent import SchedulingAgent, SCHEDULING_SYSTEM_PROMPT
         base_prompt = agent_config.system_prompt or SCHEDULING_SYSTEM_PROMPT
         tenant_id = config.get("tenant_id")
+        business_config: dict | None = config.get("business_config")
         calendar_id: str | None = None
         if tenant_id and db is not None:
             tenant = db.query(models.Tenant).filter(models.Tenant.id == tenant_id).first()
@@ -113,6 +116,7 @@ def _build_agent(
             tool_names=tool_names or None,
             tenant_id=tenant_id,
             calendar_id=calendar_id,
+            business_config=business_config,
         )
 
     raise ValueError(f"Unknown agent_type: '{agent_type}'")
@@ -127,6 +131,7 @@ def build_pipeline(
     workflow = db.query(models.Workflow).filter(models.Workflow.id == workflow_id).first()
     if not workflow:
         raise ValueError(f"Workflow {workflow_id} not found.")
+    workflow_tenant_id = str(workflow.tenant_id) if workflow.tenant_id else None
 
     workflow_agents = (
         db.query(models.WorkflowAgent)
@@ -156,6 +161,9 @@ def build_pipeline(
         )
         tool_names = [t.tool_name for t in tool_rows]
 
-        agents.append(_build_agent(agent_config, tool_names, workflow_id=workflow_id, db=db))
+        agents.append(_build_agent(
+            agent_config, tool_names,
+            workflow_id=workflow_id, db=db, tenant_id=workflow_tenant_id,
+        ))
 
     return Pipeline(agents, memory_store=memory_store)
